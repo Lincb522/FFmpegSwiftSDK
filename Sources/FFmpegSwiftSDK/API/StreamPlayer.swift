@@ -685,6 +685,7 @@ public final class StreamPlayer {
 
     /// 无缝切换到预加载的下一首。
     /// 在 playbackQueue 上调用（EOF 时），不停止 AudioRenderer。
+    /// 如果新流的采样率或声道数与当前不同，会重启 AudioRenderer 以匹配新格式。
     /// - Returns: true 表示切换成功，播放循环应继续；false 表示没有预加载
     private func transitionToNextTrack() -> Bool {
         // 原子性地取出预加载的组件
@@ -712,6 +713,28 @@ public final class StreamPlayer {
 
         guard let demuxer = nextDemuxer, let decoder = nextDecoder, let info = nextInfo else {
             return false
+        }
+
+        // 检查新 decoder 的输出格式是否与当前 AudioRenderer 匹配
+        let newSampleRate = decoder.outputSampleRate
+        let newChannelCount = decoder.outputChannelCount
+        let currentRendererRate = audioRenderer.actualSampleRate
+
+        // 如果采样率或声道数变了，需要重启 AudioRenderer
+        if newSampleRate != currentRendererRate || newChannelCount != stateQueue.sync(execute: { self.audioDecoder?.outputChannelCount ?? 0 }) {
+            // 先清空旧缓冲区
+            audioRenderer.flushQueue()
+            // 停止旧的 AudioRenderer
+            audioRenderer.stop()
+            // 用新格式重启
+            let format = makeAudioFormat(sampleRate: newSampleRate, channelCount: newChannelCount)
+            do {
+                try audioRenderer.start(format: format)
+            } catch {
+                // 重启失败，回退：尝试用旧格式重启
+                let oldFormat = makeAudioFormat(sampleRate: currentRendererRate, channelCount: newChannelCount)
+                try? audioRenderer.start(format: oldFormat)
+            }
         }
 
         // 释放旧的 pipeline 组件（但不停止 AudioRenderer）
