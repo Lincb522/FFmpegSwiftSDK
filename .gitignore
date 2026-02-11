@@ -1,0 +1,26 @@
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+DerivedData/
+*.xcuserstate
+*.moved-aside
+*.hmap
+*.ipa
+
+# Swift Package Manager
+.build/
+.swiftpm/xcode/
+Package.resolved
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Build artifacts
+build-output/
+build-ffmpeg/
+
+# FFmpeg source (users build locally)
+# Frameworks/ is tracked (contains prebuilt xcframework)
