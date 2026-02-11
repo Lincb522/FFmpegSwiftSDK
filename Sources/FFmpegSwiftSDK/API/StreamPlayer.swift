@@ -747,14 +747,17 @@ public final class StreamPlayer {
         stateQueue.sync {
             self.audioDecoder = nil
             self.videoDecoder = nil
-            // 旧的 demuxer 和 connectionManager 会被新的替换后自动释放
             self.demuxer = demuxer
             self.audioDecoder = decoder
             self.connectionManager = nextConnMgr
             self.streamInfo = info
             self.audioTimeBase = nextTimeBase
-            self.currentTime = 0
             self.currentURL = info.url
+            // 如果有 pendingSeekTime（音质切换），保持当前时间不变
+            // 否则是正常切歌，重置为 0
+            if self.pendingSeekTime == nil {
+                self.currentTime = 0
+            }
         }
 
         // 重置同步控制器
