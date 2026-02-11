@@ -137,6 +137,10 @@ public final class StreamPlayer {
     /// The URL of the current playback session.
     private var currentURL: String?
 
+    /// Seek 请求：播放循环会检查此值并在安全时刻执行 seek
+    private var pendingSeekTime: TimeInterval? = nil
+    private let seekLock = NSLock()
+
     // MARK: - Initialization
 
     /// Creates a new `StreamPlayer` with default components.
@@ -213,36 +217,49 @@ public final class StreamPlayer {
 
     /// Seeks to the specified time position in seconds.
     ///
-    /// Flushes decoder buffers and audio renderer queue, then seeks the demuxer
-    /// to the target position. Playback continues from the new position.
+    /// 将 seek 请求投递给播放循环，由播放循环在安全时刻执行，
+    /// 避免与 demuxer 的 readNextPacket 产生线程竞争。
     ///
     /// - Parameter time: The target position in seconds.
     public func seek(to time: TimeInterval) {
-        guard let demuxer = stateQueue.sync(execute: { self.demuxer }) else { return }
-        
+        seekLock.lock()
+        pendingSeekTime = time
+        seekLock.unlock()
+    }
+
+    /// 在播放循环中安全执行 seek（仅在 playbackQueue 上调用）
+    private func processPendingSeek(demuxer: Demuxer) {
+        seekLock.lock()
+        guard let seekTime = pendingSeekTime else {
+            seekLock.unlock()
+            return
+        }
+        pendingSeekTime = nil
+        seekLock.unlock()
+
         // 暂停渲染，清空缓冲区
         audioRenderer.pause()
         audioRenderer.flushQueue()
-        
+
         // Flush 解码器
         stateQueue.sync {
             audioDecoder?.flush()
             videoDecoder?.flush()
         }
-        
+
         // 重置同步控制器
         syncController.reset()
-        
+
         // 执行 seek
         do {
-            try demuxer.seek(to: time)
+            try demuxer.seek(to: seekTime)
             stateQueue.sync {
-                self.currentTime = time
+                self.currentTime = seekTime
             }
         } catch {
             // Seek 失败，静默处理
         }
-        
+
         // 恢复渲染
         if state == .playing {
             audioRenderer.resume()
@@ -404,6 +421,9 @@ public final class StreamPlayer {
     /// before audio finishes playing.
     private func runPlaybackLoop(demuxer: Demuxer) {
         while isActive() {
+            // 检查并处理 pending seek（线程安全，在 playbackQueue 上执行）
+            processPendingSeek(demuxer: demuxer)
+
             // Check if paused - wait briefly and retry
             if state == .paused {
                 Thread.sleep(forTimeInterval: 0.01)
@@ -616,6 +636,11 @@ public final class StreamPlayer {
         stateQueue.sync {
             isPlaybackActive = false
         }
+
+        // 清除未处理的 seek 请求
+        seekLock.lock()
+        pendingSeekTime = nil
+        seekLock.unlock()
 
         // Stop renderers
         audioRenderer.stop()
