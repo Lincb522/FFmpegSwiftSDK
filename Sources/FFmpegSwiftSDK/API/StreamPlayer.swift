@@ -322,25 +322,34 @@ public final class StreamPlayer {
 
         guard isActive() else { return }
 
-        // Step 3: Initialize decoders
-        do {
-            try initializeDecoders(formatContext: formatContext, demuxer: demuxer, streamInfo: info)
-        } catch {
-            handleUnrecoverableError(error)
-            return
-        }
-
-        guard isActive() else { return }
-
-        // Step 4: Start audio renderer if we have audio
+        // Step 3: 先启动 AudioRenderer，获取硬件实际采样率
+        // iOS 设备请求高采样率（如 192kHz）后，硬件可能给出不同的实际值
+        var hwSampleRate: Int? = nil
         if info.hasAudio, let sampleRate = info.sampleRate, let channelCount = info.channelCount {
             do {
                 let format = makeAudioFormat(sampleRate: sampleRate, channelCount: channelCount)
                 try audioRenderer.start(format: format)
+                hwSampleRate = audioRenderer.actualSampleRate
             } catch {
                 handleUnrecoverableError(error)
                 return
             }
+        }
+
+        guard isActive() else { return }
+
+        // Step 4: 初始化解码器，用硬件实际采样率作为 SwrContext 输出目标
+        // 如果硬件采样率与源不同，SwrContext 会自动重采样
+        do {
+            try initializeDecoders(
+                formatContext: formatContext,
+                demuxer: demuxer,
+                streamInfo: info,
+                targetSampleRate: hwSampleRate
+            )
+        } catch {
+            handleUnrecoverableError(error)
+            return
         }
 
         // Transition to playing
@@ -363,7 +372,8 @@ public final class StreamPlayer {
     private func initializeDecoders(
         formatContext: FFmpegFormatContext,
         demuxer: Demuxer,
-        streamInfo: StreamInfo
+        streamInfo: StreamInfo,
+        targetSampleRate: Int? = nil
     ) throws {
         // Initialize audio decoder
         if streamInfo.hasAudio, demuxer.currentAudioStreamIndex >= 0 {
@@ -374,7 +384,11 @@ public final class StreamPlayer {
                 // 保存音频流的 time_base，用于 PTS → 秒 的精确转换
                 stateQueue.sync { self.audioTimeBase = stream.pointee.time_base }
                 do {
-                    let decoder = try AudioDecoder(codecParameters: codecpar, codecID: codecID)
+                    let decoder = try AudioDecoder(
+                        codecParameters: codecpar,
+                        codecID: codecID,
+                        targetSampleRate: targetSampleRate
+                    )
                     stateQueue.sync { self.audioDecoder = decoder }
                 } catch {
                     // Audio decoder init failure is unrecoverable if we only have audio

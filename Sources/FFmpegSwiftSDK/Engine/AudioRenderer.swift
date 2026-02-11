@@ -6,6 +6,7 @@
 
 import Foundation
 import AudioToolbox
+import AVFoundation
 
 /// Renders PCM audio data to the system audio output device.
 ///
@@ -42,6 +43,9 @@ final class AudioRenderer {
     /// Whether the renderer is currently started (audio unit initialized).
     private var isStarted: Bool = false
 
+    /// 硬件实际采样率（start 后可用，可能与请求的不同）
+    private(set) var actualSampleRate: Int = 0
+
     /// Maximum number of queued buffers before backpressure kicks in.
     static let maxQueuedBuffers = 200
 
@@ -77,7 +81,23 @@ final class AudioRenderer {
     /// - Throws: `FFmpegError.resourceAllocationFailed` if the audio unit cannot be created or started.
     func start(format: AudioStreamBasicDescription) throws {
         guard !isStarted else { return }
-        sampleRate = Int(format.mSampleRate)
+
+        // 设置 AVAudioSession 首选采样率，支持 Hi-Res 192kHz 母带
+        #if os(iOS) || os(tvOS)
+        let session = AVAudioSession.sharedInstance()
+        try? session.setPreferredSampleRate(format.mSampleRate)
+        // 硬件实际采样率（可能与请求不同，取决于设备能力）
+        let hwRate = session.sampleRate
+        #else
+        let hwRate = format.mSampleRate
+        #endif
+
+        // 用硬件实际采样率构建最终格式
+        var streamFormat = format
+        streamFormat.mSampleRate = hwRate
+        sampleRate = Int(hwRate)
+        // 保存实际采样率供外部查询
+        actualSampleRate = Int(hwRate)
 
         var description = AudioComponentDescription(
             componentType: kAudioUnitType_Output,
@@ -99,7 +119,6 @@ final class AudioRenderer {
         self.audioUnit = audioUnit
 
         // Set the stream format on the output scope
-        var streamFormat = format
         status = AudioUnitSetProperty(
             audioUnit,
             kAudioUnitProperty_StreamFormat,

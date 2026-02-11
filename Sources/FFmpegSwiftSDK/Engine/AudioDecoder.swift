@@ -120,26 +120,26 @@ final class AudioDecoder: Decoder {
     /// The resampling context for converting decoded audio to Float32 PCM.
     private var resampleContext: OpaquePointer?
 
-    /// The target output sample rate (matches the input).
-    private let outputSampleRate: Int
+    /// 实际输出采样率（保持与源一致，支持 Hi-Res 192kHz）
+    private(set) var outputSampleRate: Int
 
-    /// The target output channel count (matches the input).
-    private let outputChannelCount: Int
+    /// 实际输出声道数
+    private(set) var outputChannelCount: Int
 
     // MARK: - Initialization
 
     /// Creates a new `AudioDecoder` for the given codec parameters.
     ///
-    /// Validates that the codec is supported (AAC or MP3), configures the
-    /// codec context from the stream parameters, opens the decoder, and
-    /// sets up a SwrContext for Float32 PCM conversion.
+    /// 解码并转换为 Float32 interleaved PCM。
+    /// 如果指定了 targetSampleRate 且与源不同，SwrContext 会自动重采样。
     ///
     /// - Parameters:
     ///   - codecParameters: The codec parameters from the audio stream.
     ///   - codecID: The codec ID to decode.
+    ///   - targetSampleRate: 目标输出采样率。nil 表示保持源采样率。
     /// - Throws: `FFmpegError.unsupportedFormat` if the codec is not supported,
     ///   or other `FFmpegError` variants if initialization fails.
-    init(codecParameters: UnsafePointer<AVCodecParameters>, codecID: AVCodecID) throws {
+    init(codecParameters: UnsafePointer<AVCodecParameters>, codecID: AVCodecID, targetSampleRate: Int? = nil) throws {
         // Validate supported codec
         try validateCodecSupported(codecID, in: supportedAudioCodecIDs)
 
@@ -159,22 +159,32 @@ final class AudioDecoder: Decoder {
         }
 
         // Extract audio parameters
-        outputSampleRate = Int(ctx.pointee.sample_rate)
+        let inputRate = Int(ctx.pointee.sample_rate)
         outputChannelCount = Int(ctx.pointee.ch_layout.nb_channels)
+        // 如果指定了目标采样率就用它，否则保持源采样率
+        outputSampleRate = targetSampleRate ?? inputRate
 
         // Set up SwrContext for conversion to Float32 interleaved PCM
-        resampleContext = try AudioDecoder.createResampleContext(codecContext: ctx)
+        // 保持原始采样率，支持 Hi-Res 192kHz 母带音质
+        resampleContext = try AudioDecoder.createResampleContext(
+            codecContext: ctx,
+            outputSampleRate: Int32(outputSampleRate)
+        )
     }
 
     // MARK: - Resampling Setup
 
     /// Creates and initializes a SwrContext for converting decoded audio to Float32 interleaved PCM.
     ///
+    /// 保持原始采样率不变，仅做格式转换（planar → interleaved, 任意位深 → Float32）。
+    /// 支持 Hi-Res 192kHz/24bit 母带音质。
+    ///
     /// - Parameter codecContext: The opened codec context with valid audio parameters.
     /// - Returns: An initialized SwrContext opaque pointer.
     /// - Throws: `FFmpegError.resourceAllocationFailed` if allocation or initialization fails.
     private static func createResampleContext(
-        codecContext ctx: UnsafeMutablePointer<AVCodecContext>
+        codecContext ctx: UnsafeMutablePointer<AVCodecContext>,
+        outputSampleRate: Int32
     ) throws -> OpaquePointer {
         // Allocate SwrContext
         var swrCtx: OpaquePointer? = swr_alloc()
@@ -196,7 +206,7 @@ final class AudioDecoder: Decoder {
             &newSwrCtx,
             &outLayout,                          // output channel layout
             AV_SAMPLE_FMT_FLT,                   // output sample format: Float32 interleaved
-            ctx.pointee.sample_rate,              // output sample rate
+            outputSampleRate,                     // output sample rate（可能与输入不同）
             &inLayout,                            // input channel layout
             ctx.pointee.sample_fmt,               // input sample format
             ctx.pointee.sample_rate,              // input sample rate
