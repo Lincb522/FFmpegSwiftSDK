@@ -142,6 +142,13 @@ final class ConnectionManager {
         case .hls, .http, .https:
             // HTTP-based protocols use `timeout` in microseconds
             av_dict_set(&opts, "timeout", timeoutStr, 0)
+            // 设置 User-Agent 和 Referer，避免 CDN 拒绝连接或提前断开
+            av_dict_set(&opts, "user_agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", 0)
+            av_dict_set(&opts, "referer", "https://music.163.com/", 0)
+            // 允许 HTTP 重定向（网易云 CDN 常用 302 跳转）
+            av_dict_set(&opts, "reconnect", "1", 0)
+            av_dict_set(&opts, "reconnect_streamed", "1", 0)
+            av_dict_set(&opts, "reconnect_delay_max", "5", 0)
         case .file, .none:
             // No timeout needed for local files; for unknown protocols, set a generic timeout
             if proto == nil {
