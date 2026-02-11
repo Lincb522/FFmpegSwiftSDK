@@ -36,9 +36,11 @@ let package = Package(
         ),
 
         // Single merged XCFramework for iOS (device + simulator)
+        // 远程引用：从 GitHub Release 下载预编译的 xcframework
         .binaryTarget(
             name: "FFmpegLibs",
-            path: "Frameworks/FFmpegLibs.xcframework"
+            url: "https://github.com/Lincb522/FFmpegSwiftSDK/releases/download/0.2.0/FFmpegLibs.xcframework.zip",
+            checksum: "7f774f68283784a7527b6d211d3b48fa81d716f146029f58b2ac84373b38c2d6"
         ),
 
         .target(

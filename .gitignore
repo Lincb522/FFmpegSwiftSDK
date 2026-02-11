@@ -26,4 +26,5 @@ build-ffmpeg/
 Tests/
 
 # FFmpeg source (users build locally)
-# Frameworks/ is tracked (contains prebuilt xcframework)
+# xcframework 通过 GitHub Release 分发，本地不再跟踪
+Frameworks/
