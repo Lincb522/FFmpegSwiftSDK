@@ -330,6 +330,20 @@ final class AudioDecoder: Decoder {
             )
         }
 
+        // 如果实际转换的采样数远小于分配的缓冲区，缩减到实际大小以节省内存
+        let actualSamples = Int(convertedSamples) * channelCount
+        if actualSamples < totalSamples {
+            let trimmedBuffer = UnsafeMutablePointer<Float>.allocate(capacity: actualSamples)
+            trimmedBuffer.initialize(from: outputBuffer, count: actualSamples)
+            outputBuffer.deallocate()
+            return AudioBuffer(
+                data: trimmedBuffer,
+                frameCount: Int(convertedSamples),
+                channelCount: channelCount,
+                sampleRate: outputSampleRate
+            )
+        }
+
         return AudioBuffer(
             data: outputBuffer,
             frameCount: Int(convertedSamples),

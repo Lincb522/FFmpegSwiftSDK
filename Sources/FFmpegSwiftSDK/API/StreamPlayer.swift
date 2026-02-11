@@ -141,6 +141,9 @@ public final class StreamPlayer {
     private var pendingSeekTime: TimeInterval? = nil
     private let seekLock = NSLock()
 
+    /// 音频流的 time_base，用于将 packet PTS 精确转换为秒
+    private var audioTimeBase: AVRational = AVRational(num: 0, den: 1)
+
     // MARK: - Initialization
 
     /// Creates a new `StreamPlayer` with default components.
@@ -368,6 +371,8 @@ public final class StreamPlayer {
             if let stream = formatContext.stream(at: streamIndex),
                let codecpar = stream.pointee.codecpar {
                 let codecID = codecpar.pointee.codec_id
+                // 保存音频流的 time_base，用于 PTS → 秒 的精确转换
+                stateQueue.sync { self.audioTimeBase = stream.pointee.time_base }
                 do {
                     let decoder = try AudioDecoder(codecParameters: codecpar, codecID: codecID)
                     stateQueue.sync { self.audioDecoder = decoder }
@@ -469,21 +474,30 @@ public final class StreamPlayer {
     }
 
     /// Waits for the audio renderer to finish playing all queued buffers after EOF.
+    /// 添加 10 秒超时保护，防止无限阻塞。
     private func waitForRendererDrain() {
+        let maxWait: TimeInterval = 10.0
+        let start = Date()
         while isActive() && audioRenderer.queuedBufferCount > 0 {
+            if Date().timeIntervalSince(start) > maxWait {
+                break
+            }
             Thread.sleep(forTimeInterval: 0.05)
         }
     }
 
     /// Processes a single audio packet: decode → EQ → render.
     ///
-    /// Recoverable errors (individual frame decoding failures) are caught and
-    /// skipped. Unrecoverable errors (resource allocation failures, etc.) are
-    /// propagated to trigger an automatic stop.
+    /// 使用 packet PTS + audioTimeBase 精确计算播放时间，避免 duration 累加漂移。
+    /// 可恢复错误（单帧解码失败）会被跳过，不可恢复错误会触发自动停止。
     ///
     /// - Returns: An unrecoverable `FFmpegError` if one occurred, or `nil` on success/skip.
     @discardableResult
     private func processAudioPacket(_ pkt: UnsafeMutablePointer<AVPacket>) -> FFmpegError? {
+        // 在 defer 之前读取 PTS，因为 av_packet_unref 会清除它
+        let packetPTS = pkt.pointee.pts
+        let timeBase = stateQueue.sync { self.audioTimeBase }
+
         defer {
             var packet: UnsafeMutablePointer<AVPacket>? = pkt
             av_packet_unref(pkt)
@@ -495,15 +509,28 @@ public final class StreamPlayer {
         do {
             let audioBuffers = try decoder.decodeAll(packet: pkt)
 
-            for audioBuffer in audioBuffers {
-                // Enqueue raw PCM for rendering (EQ is applied in real-time by the renderer)
+            for (index, audioBuffer) in audioBuffers.enumerated() {
                 audioRenderer.enqueue(audioBuffer)
 
-                // Update audio clock for A/V sync
-                let pts = currentTime + audioBuffer.duration
+                // 精确时间计算：优先使用 packet PTS + stream time_base
+                let pts: TimeInterval
+                let nopts = Int64(bitPattern: UInt64(0x8000000000000000)) // AV_NOPTS_VALUE
+                if packetPTS != nopts && packetPTS >= 0 && timeBase.den > 0 {
+                    // PTS 有效：转换为秒，多 frame 时用 duration 偏移
+                    let basePTS = Double(packetPTS) * Double(timeBase.num) / Double(timeBase.den)
+                    // 如果一个 packet 解码出多个 frame，后续 frame 加上偏移
+                    var offset: TimeInterval = 0
+                    for i in 0..<index {
+                        offset += audioBuffers[i].duration
+                    }
+                    pts = basePTS + offset + audioBuffer.duration
+                } else {
+                    // PTS 无效，退回 duration 累加（不太精确但可用）
+                    pts = stateQueue.sync { self.currentTime } + audioBuffer.duration
+                }
+
                 syncController.updateAudioClock(pts)
 
-                // Update current time
                 stateQueue.sync {
                     self.currentTime = pts
                 }
@@ -511,10 +538,8 @@ public final class StreamPlayer {
 
             return nil
         } catch let error as FFmpegError where error.isUnrecoverable {
-            // Unrecoverable error — propagate to trigger auto-stop
             return error
         } catch {
-            // Recoverable error (e.g., single frame decode failure) — skip and continue
             return nil
         }
     }
@@ -649,6 +674,7 @@ public final class StreamPlayer {
             audioDecoder = nil
             videoDecoder = nil
             demuxer = nil
+            audioTimeBase = AVRational(num: 0, den: 1)
         }
 
         // Disconnect

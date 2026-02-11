@@ -180,8 +180,12 @@ final class AudioRenderer {
     /// Flushes all queued audio buffers without stopping the audio unit.
     ///
     /// Used during seek to clear stale audio data before new data arrives.
+    /// Deallocates all buffer memory to prevent leaks.
     func flushQueue() {
         lock.lock()
+        for buffer in bufferQueue {
+            buffer.data.deallocate()
+        }
         bufferQueue.removeAll()
         currentBufferOffset = 0
         lock.unlock()
@@ -190,6 +194,7 @@ final class AudioRenderer {
     /// Stops audio playback and releases all resources.
     ///
     /// After calling `stop()`, you must call `start(format:)` again to resume playback.
+    /// Deallocates all queued buffer memory to prevent leaks.
     func stop() {
         if let audioUnit = audioUnit {
             AudioOutputUnitStop(audioUnit)
@@ -199,6 +204,9 @@ final class AudioRenderer {
         }
 
         lock.lock()
+        for buffer in bufferQueue {
+            buffer.data.deallocate()
+        }
         bufferQueue.removeAll()
         currentBufferOffset = 0
         lock.unlock()
@@ -254,9 +262,10 @@ final class AudioRenderer {
             samplesWritten += samplesToRead
             currentBufferOffset += samplesToRead
 
-            // If we've consumed the entire front buffer, remove it
+            // If we've consumed the entire front buffer, free its memory and remove it
             if currentBufferOffset >= frontTotalSamples {
-                bufferQueue.removeFirst()
+                let consumed = bufferQueue.removeFirst()
+                consumed.data.deallocate()
                 currentBufferOffset = 0
             }
         }
