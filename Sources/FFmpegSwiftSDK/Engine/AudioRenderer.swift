@@ -177,6 +177,16 @@ final class AudioRenderer {
         AudioOutputUnitStart(audioUnit)
     }
 
+    /// Flushes all queued audio buffers without stopping the audio unit.
+    ///
+    /// Used during seek to clear stale audio data before new data arrives.
+    func flushQueue() {
+        lock.lock()
+        bufferQueue.removeAll()
+        currentBufferOffset = 0
+        lock.unlock()
+    }
+
     /// Stops audio playback and releases all resources.
     ///
     /// After calling `stop()`, you must call `start(format:)` again to resume playback.

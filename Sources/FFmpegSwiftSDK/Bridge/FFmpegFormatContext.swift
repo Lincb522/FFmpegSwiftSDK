@@ -140,6 +140,27 @@ final class FFmpegFormatContext {
         return streams[index]
     }
 
+    // MARK: - Seek
+
+    /// Seeks to the specified timestamp in the stream.
+    ///
+    /// Calls `av_seek_frame` with `AVSEEK_FLAG_BACKWARD` to seek to the nearest
+    /// keyframe before the given timestamp.
+    ///
+    /// - Parameters:
+    ///   - timestamp: The target timestamp in AV_TIME_BASE units (microseconds).
+    ///   - streamIndex: The stream index to seek in, or -1 for default.
+    /// - Throws: `FFmpegError` on failure.
+    func seek(to timestamp: Int64, streamIndex: Int32 = -1) throws {
+        guard let ctx = pointer else {
+            throw FFmpegError.resourceAllocationFailed(resource: "AVFormatContext (nil)")
+        }
+        let ret = av_seek_frame(ctx, streamIndex, timestamp, AVSEEK_FLAG_BACKWARD)
+        guard ret >= 0 else {
+            throw FFmpegError.from(code: ret)
+        }
+    }
+
     // MARK: - Deinitialization
 
     deinit {

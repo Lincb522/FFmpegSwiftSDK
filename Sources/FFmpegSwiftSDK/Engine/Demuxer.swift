@@ -273,6 +273,20 @@ final class Demuxer {
         }
     }
 
+    // MARK: - Seek
+
+    /// Seeks to the specified time position in seconds.
+    ///
+    /// Converts the time to AV_TIME_BASE units and delegates to the format context.
+    /// After seeking, the caller should flush decoder buffers.
+    ///
+    /// - Parameter timeInSeconds: The target position in seconds.
+    /// - Throws: `FFmpegError` on failure.
+    func seek(to timeInSeconds: TimeInterval) throws {
+        let timestamp = Int64(timeInSeconds * Double(AV_TIME_BASE))
+        try formatContext.seek(to: timestamp)
+    }
+
     // MARK: - Stream Index Accessors
 
     /// The index of the discovered audio stream, or -1 if none.

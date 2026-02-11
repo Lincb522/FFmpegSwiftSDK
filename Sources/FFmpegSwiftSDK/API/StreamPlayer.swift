@@ -211,6 +211,44 @@ public final class StreamPlayer {
         transitionState(to: .stopped)
     }
 
+    /// Seeks to the specified time position in seconds.
+    ///
+    /// Flushes decoder buffers and audio renderer queue, then seeks the demuxer
+    /// to the target position. Playback continues from the new position.
+    ///
+    /// - Parameter time: The target position in seconds.
+    public func seek(to time: TimeInterval) {
+        guard let demuxer = stateQueue.sync(execute: { self.demuxer }) else { return }
+        
+        // 暂停渲染，清空缓冲区
+        audioRenderer.pause()
+        audioRenderer.flushQueue()
+        
+        // Flush 解码器
+        stateQueue.sync {
+            audioDecoder?.flush()
+            videoDecoder?.flush()
+        }
+        
+        // 重置同步控制器
+        syncController.reset()
+        
+        // 执行 seek
+        do {
+            try demuxer.seek(to: time)
+            stateQueue.sync {
+                self.currentTime = time
+            }
+        } catch {
+            // Seek 失败，静默处理
+        }
+        
+        // 恢复渲染
+        if state == .playing {
+            audioRenderer.resume()
+        }
+    }
+
     // MARK: - Pipeline
 
     /// Starts the full playback pipeline: connect → demux → decode → render.
