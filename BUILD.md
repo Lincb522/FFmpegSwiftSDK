@@ -1,13 +1,17 @@
-# Building FFmpeg for iOS
+# 🔨 从源码编译 FFmpeg for iOS
 
-This document describes how to cross-compile FFmpeg 7.1 for iOS and create the `FFmpegLibs.xcframework` used by FFmpegSwiftSDK.
+本文档介绍如何交叉编译 FFmpeg 7.1 并生成 `FFmpegLibs.xcframework`。
 
-## Prerequisites
+---
 
-- macOS with Xcode 15+ and Command Line Tools installed
-- FFmpeg 7.1 source code
+## 📋 前置条件
 
-## Download FFmpeg Source
+- macOS + Xcode 15+ 及 Command Line Tools
+- FFmpeg 7.1 源码
+
+---
+
+## 📥 下载源码
 
 ```bash
 mkdir -p build-ffmpeg && cd build-ffmpeg
@@ -15,55 +19,85 @@ curl -L https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz | tar xJ
 cd ..
 ```
 
-This places the source at `build-ffmpeg/ffmpeg-7.1/`.
+源码位于 `build-ffmpeg/ffmpeg-7.1/`。
 
-## Build (One Command)
+---
+
+## ⚡ 一键编译
 
 ```bash
 bash scripts/rebuild-all.sh
 ```
 
-This script:
-1. Cross-compiles FFmpeg for 3 targets:
-   - `iphoneos arm64` (device)
-   - `iphonesimulator arm64` (Apple Silicon Mac simulator)
-   - `iphonesimulator x86_64` (Intel Mac simulator)
-2. Merges simulator slices into a fat binary via `lipo`
-3. Merges all 5 FFmpeg static libs into a single `libFFmpegAll.a` per platform via `libtool`
-4. Creates `Frameworks/FFmpegLibs.xcframework` via `xcodebuild -create-xcframework`
-5. Removes platform-specific headers (D3D, VAAPI, Vulkan, etc.)
-6. Regenerates the Example Xcode project
+这个脚本会自动完成以下步骤：
 
-## Build Configuration
+| 步骤 | 说明 |
+|:---:|:---|
+| 1️⃣ | 交叉编译 3 个目标架构 |
+| 2️⃣ | 合并模拟器 fat binary（`lipo`） |
+| 3️⃣ | 合并 5 个静态库为 `libFFmpegAll.a`（`libtool`） |
+| 4️⃣ | 创建 `FFmpegLibs.xcframework`（`xcodebuild`） |
+| 5️⃣ | 清理平台特定头文件 |
+| 6️⃣ | 重新生成示例工程 |
 
-The build enables:
+---
 
-### Audio Decoders (~30)
-AAC, MP3, FLAC, Vorbis, Opus, ALAC, PCM (S16/S24/S32/F32/F64, LE/BE), μ-law, A-law, WavPack, APE, TAK, DSD, WMA (v1/v2/lossless/pro), AMR (NB/WB), AC3, EAC3, DTS, ATRAC (1/3/3+), Cook, MPC, TTA, ADPCM
+## 🎯 编译目标
 
-### Video Decoders
-H.264, HEVC (H.265)
+| 平台 | 架构 | 用途 |
+|:---:|:---:|:---|
+| `iphoneos` | arm64 | 真机 |
+| `iphonesimulator` | arm64 | Apple Silicon Mac 模拟器 |
+| `iphonesimulator` | x86_64 | Intel Mac 模拟器 |
 
-### Demuxers
-MOV/MP4, MPEG-TS, FLV, HLS, RTSP, MP3, AAC, FLAC, OGG, WAV, APE, TAK, WavPack, TTA, DSF, DFF, ASF, Matroska/WebM, AIFF, CAF, AMR, AC3, EAC3, DTS, and more
+---
 
-### Protocols
-file, http, https, tcp, udp, hls, rtmp
+## 🎧 启用的音频解码器（约 30 个）
 
-### Build Flags
-- Static libraries only (`--enable-static --disable-shared`)
-- No programs/docs (`--disable-programs --disable-doc`)
-- Size-optimized (`--enable-small`)
-- PIC enabled for framework embedding
-- ASM disabled for cross-compilation compatibility
-- Minimum iOS deployment target: 16.0
 
-## Output Structure
+| 分类 | 解码器 |
+|:---|:---|
+| 有损压缩 | AAC、MP3、Vorbis、Opus、WMA v1/v2/Pro、AMR-NB/WB、Cook、MPC、ATRAC 1/3/3+ |
+| 无损压缩 | FLAC、ALAC、WavPack、APE、TAK、TTA、WMA Lossless、DSD |
+| PCM 原始 | S16/S24/S32/F32/F64（LE/BE）、μ-law、A-law、ADPCM |
+| 环绕声 | AC3、EAC3、DTS |
+
+---
+
+## 🎬 视频解码器
+
+- H.264
+- HEVC (H.265)
+
+---
+
+## 🌐 支持的协议 & 封装格式
+
+**协议：** file / http / https / tcp / udp / hls / rtmp
+
+**封装格式：** MOV/MP4、MPEG-TS、FLV、HLS、RTSP、MP3、AAC、FLAC、OGG、WAV、APE、TAK、WavPack、TTA、DSF、DFF、ASF、Matroska/WebM、AIFF、CAF、AMR、AC3、EAC3、DTS 等
+
+---
+
+## ⚙️ 编译参数
+
+```
+--enable-static --disable-shared    # 仅静态库
+--disable-programs --disable-doc    # 不编译命令行工具和文档
+--enable-small                      # 体积优化
+--enable-pic                        # 位置无关代码（框架嵌入必需）
+--disable-asm                       # 禁用汇编（交叉编译兼容性）
+最低部署目标：iOS 16.0
+```
+
+---
+
+## 📁 输出结构
 
 ```
 Frameworks/FFmpegLibs.xcframework/
 ├── Info.plist
-├── ios-arm64/
+├── ios-arm64/                          ← 真机
 │   ├── Headers/
 │   │   ├── libavcodec/
 │   │   ├── libavfilter/
@@ -71,31 +105,39 @@ Frameworks/FFmpegLibs.xcframework/
 │   │   ├── libavutil/
 │   │   └── libswresample/
 │   └── libFFmpegAll.a
-└── ios-arm64_x86_64-simulator/
+└── ios-arm64_x86_64-simulator/         ← 模拟器（fat binary）
     ├── Headers/
-    │   └── (same structure)
-    └── libFFmpegAll.a          # fat binary: arm64 + x86_64
+    │   └── （同上）
+    └── libFFmpegAll.a
 ```
 
-## Individual Build Scripts
+---
 
-| Script | Purpose |
-|--------|---------|
-| `scripts/rebuild-all.sh` | Full build: all architectures + xcframework |
-| `scripts/build-ffmpeg-ios.sh` | Build single architecture |
-| `scripts/rebuild-sim-and-xcframework.sh` | Rebuild simulator + xcframework only |
-| `scripts/build-ipa.sh` | Package unsigned IPA for sideloading |
+## 📜 脚本说明
 
-## Troubleshooting
+| 脚本 | 用途 |
+|:---|:---|
+| `scripts/rebuild-all.sh` | 全量编译：所有架构 + xcframework |
+| `scripts/build-ffmpeg-ios.sh` | 编译单个架构 |
+| `scripts/rebuild-sim-and-xcframework.sh` | 仅重编译模拟器 + xcframework |
+| `scripts/build-ipa.sh` | 打包未签名 IPA（侧载用） |
 
-### "No such module 'CFFmpeg'" in Xcode
-Clean the build folder (Cmd+Shift+K) and rebuild. The SPM package needs to resolve the xcframework first.
+---
 
-### Header errors (d3d11va.h, dxva2.h, etc.)
-Run `scripts/rebuild-all.sh` — it automatically removes platform-specific headers that don't exist on iOS/macOS.
+## 🔧 常见问题
 
-### Linker errors on simulator
-Make sure the xcframework contains the fat simulator binary with both arm64 and x86_64. Verify with:
+### "No such module 'CFFmpeg'"
+
+清理 Build Folder（`Cmd+Shift+K`）后重新编译。SPM 需要先解析 xcframework。
+
+### 头文件报错（d3d11va.h、dxva2.h 等）
+
+运行 `scripts/rebuild-all.sh`，脚本会自动清理 iOS/macOS 上不存在的平台特定头文件。
+
+### 模拟器链接错误
+
+确认 xcframework 中的模拟器 binary 包含 arm64 和 x86_64 两个架构：
+
 ```bash
 lipo -info Frameworks/FFmpegLibs.xcframework/ios-arm64_x86_64-simulator/libFFmpegAll.a
 ```
