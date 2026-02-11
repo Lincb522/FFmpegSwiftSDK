@@ -38,6 +38,8 @@ public protocol StreamPlayerDelegate: AnyObject {
     func player(_ player: StreamPlayer, didEncounterError error: FFmpegError)
     /// Called when the player updates the current playback duration/time.
     func player(_ player: StreamPlayer, didUpdateDuration duration: TimeInterval)
+    /// 无缝切歌：当前歌曲播放完毕，已自动切换到预加载的下一首
+    func playerDidTransitionToNextTrack(_ player: StreamPlayer)
 }
 
 // MARK: - StreamPlayer
@@ -144,6 +146,22 @@ public final class StreamPlayer {
     /// 音频流的 time_base，用于将 packet PTS 精确转换为秒
     private var audioTimeBase: AVRational = AVRational(num: 0, den: 1)
 
+    // MARK: - Gapless Playback (预加载下一首)
+
+    /// 预加载的下一首 pipeline 组件
+    private var nextConnectionManager: ConnectionManager?
+    private var nextDemuxer: Demuxer?
+    private var nextAudioDecoder: AudioDecoder?
+    private var nextStreamInfo: StreamInfo?
+    private var nextAudioTimeBase: AVRational = AVRational(num: 0, den: 1)
+    private var nextURL: String?
+    /// 预加载是否就绪
+    private var isNextReady: Bool = false
+    /// 强制切换标志（音质切换时使用）
+    private var forceTransition: Bool = false
+    /// 预加载专用队列
+    private let prepareQueue = DispatchQueue(label: "com.ffmpeg-sdk.prepare-next", qos: .utility)
+
     // MARK: - Initialization
 
     /// Creates a new `StreamPlayer` with default components.
@@ -173,6 +191,8 @@ public final class StreamPlayer {
     public func play(url: String) {
         // Stop any existing session first
         stopInternal()
+        // 清理预加载（手动切歌时预加载的下一首可能已不正确）
+        cancelNextPreparation()
 
         stateQueue.sync {
             self.isPlaybackActive = true
@@ -228,6 +248,58 @@ public final class StreamPlayer {
         seekLock.lock()
         pendingSeekTime = time
         seekLock.unlock()
+    }
+
+    /// 预加载下一首歌曲，实现无缝切歌（gapless playback）。
+    ///
+    /// 在后台队列连接并初始化下一首的 demuxer + decoder，
+    /// 当前歌曲 EOF 时直接切换 pipeline，AudioRenderer 不中断。
+    ///
+    /// - Parameter url: 下一首歌曲的 URL
+    public func prepareNext(url: String) {
+        // 取消之前的预加载
+        cancelNextPreparation()
+
+        stateQueue.sync {
+            self.nextURL = url
+            self.isNextReady = false
+        }
+
+        prepareQueue.async { [weak self] in
+            self?.performNextPreparation(url: url)
+        }
+    }
+
+    /// 立即切换到预加载的下一首（用于音质切换等场景）。
+    /// 不等 EOF，主动触发切换，可指定 seek 位置。
+    /// - Parameter seekTo: 切换后 seek 到的位置（秒），nil 表示从头播放
+    public func switchToNext(seekTo: TimeInterval? = nil) {
+        guard stateQueue.sync(execute: { self.isNextReady }) else { return }
+        // 投递 seek 请求，transitionToNextTrack 后播放循环会处理
+        if let time = seekTo {
+            seekLock.lock()
+            pendingSeekTime = time
+            seekLock.unlock()
+        }
+        // 设置标志让播放循环在下次迭代时触发切换
+        stateQueue.sync {
+            self.forceTransition = true
+        }
+    }
+
+    /// 取消预加载
+    public func cancelNextPreparation() {
+        stateQueue.sync {
+            nextConnectionManager?.disconnect()
+            nextConnectionManager = nil
+            nextDemuxer = nil
+            nextAudioDecoder = nil
+            nextStreamInfo = nil
+            nextAudioTimeBase = AVRational(num: 0, den: 1)
+            nextURL = nil
+            isNextReady = false
+            forceTransition = false
+        }
     }
 
     /// 在播放循环中安全执行 seek（仅在 playbackQueue 上调用）
@@ -433,14 +505,29 @@ public final class StreamPlayer {
     /// threshold, the loop sleeps briefly to let the renderer catch up. This
     /// prevents unbounded memory growth and ensures we don't race past EOF
     /// before audio finishes playing.
-    private func runPlaybackLoop(demuxer: Demuxer) {
+    private func runPlaybackLoop(demuxer initialDemuxer: Demuxer) {
         while isActive() {
+            // 获取当前 demuxer（可能在无缝切歌后被替换）
+            guard let currentDemuxer = stateQueue.sync(execute: { self.demuxer }) else { return }
+
             // 检查并处理 pending seek（线程安全，在 playbackQueue 上执行）
-            processPendingSeek(demuxer: demuxer)
+            processPendingSeek(demuxer: currentDemuxer)
 
             // Check if paused - wait briefly and retry
             if state == .paused {
                 Thread.sleep(forTimeInterval: 0.01)
+                continue
+            }
+
+            // 检查是否有强制切换请求（音质切换）
+            let shouldForceTransition = stateQueue.sync(execute: {
+                let val = self.forceTransition
+                self.forceTransition = false
+                return val
+            })
+            if shouldForceTransition && transitionToNextTrack() {
+                // 强制切换成功，flush 旧 buffer 并继续
+                audioRenderer.flushQueue()
                 continue
             }
 
@@ -452,7 +539,7 @@ public final class StreamPlayer {
 
             let packet: Demuxer.PacketType?
             do {
-                packet = try demuxer.readNextPacket()
+                packet = try currentDemuxer.readNextPacket()
             } catch let error as FFmpegError where error == .networkDisconnected {
                 handleNetworkDisconnection()
                 return
@@ -465,7 +552,12 @@ public final class StreamPlayer {
             }
 
             guard let packet = packet else {
-                // EOF reached — wait for the audio renderer to drain its buffer
+                // EOF reached — 尝试无缝切换到预加载的下一首
+                if transitionToNextTrack() {
+                    // 成功切换到下一首，继续循环（下次迭代会取到新的 self.demuxer）
+                    continue
+                }
+                // 没有预加载的下一首，正常结束
                 waitForRendererDrain()
                 stopInternal()
                 transitionState(to: .stopped)
@@ -500,7 +592,161 @@ public final class StreamPlayer {
         }
     }
 
-    /// Processes a single audio packet: decode → EQ → render.
+    // MARK: - Gapless: 预加载与切换
+
+    /// 在后台执行下一首的预加载：连接 → demux → 初始化 decoder
+    private func performNextPreparation(url: String) {
+        let manager = ConnectionManager()
+
+        // Step 1: 连接
+        let formatContext: FFmpegFormatContext
+        do {
+            var connectResult: Result<FFmpegFormatContext, Error>?
+            let semaphore = DispatchSemaphore(value: 0)
+            Task {
+                do {
+                    let ctx = try await manager.connect(url: url)
+                    connectResult = .success(ctx)
+                } catch {
+                    connectResult = .failure(error)
+                }
+                semaphore.signal()
+            }
+            semaphore.wait()
+
+            switch connectResult! {
+            case .success(let ctx): formatContext = ctx
+            case .failure: return // 预加载失败，静默处理
+            }
+        }
+
+        // 检查是否已被取消
+        let stillValid = stateQueue.sync { self.nextURL == url }
+        guard stillValid else {
+            manager.disconnect()
+            return
+        }
+
+        // Step 2: Demux - 查找流
+        let demuxer = Demuxer(formatContext: formatContext, url: url)
+        let info: StreamInfo
+        do {
+            info = try demuxer.findStreams()
+        } catch {
+            manager.disconnect()
+            return
+        }
+
+        guard stateQueue.sync(execute: { self.nextURL == url }) else {
+            manager.disconnect()
+            return
+        }
+
+        // Step 3: 初始化 audio decoder
+        // 使用当前 AudioRenderer 的采样率作为目标，避免需要重启 AudioUnit
+        var decoder: AudioDecoder?
+        var nextTimeBase = AVRational(num: 0, den: 1)
+        if info.hasAudio, demuxer.currentAudioStreamIndex >= 0 {
+            let streamIndex = Int(demuxer.currentAudioStreamIndex)
+            if let stream = formatContext.stream(at: streamIndex),
+               let codecpar = stream.pointee.codecpar {
+                let codecID = codecpar.pointee.codec_id
+                nextTimeBase = stream.pointee.time_base
+                // 用当前 renderer 的实际采样率，这样不需要重启 AudioUnit
+                let targetRate = audioRenderer.actualSampleRate > 0 ? audioRenderer.actualSampleRate : nil
+                decoder = try? AudioDecoder(
+                    codecParameters: codecpar,
+                    codecID: codecID,
+                    targetSampleRate: targetRate
+                )
+            }
+        }
+
+        guard decoder != nil else {
+            manager.disconnect()
+            return
+        }
+
+        guard stateQueue.sync(execute: { self.nextURL == url }) else {
+            manager.disconnect()
+            return
+        }
+
+        // 保存预加载结果
+        stateQueue.sync {
+            self.nextConnectionManager = manager
+            self.nextDemuxer = demuxer
+            self.nextAudioDecoder = decoder
+            self.nextStreamInfo = info
+            self.nextAudioTimeBase = nextTimeBase
+            self.isNextReady = true
+        }
+    }
+
+    /// 无缝切换到预加载的下一首。
+    /// 在 playbackQueue 上调用（EOF 时），不停止 AudioRenderer。
+    /// - Returns: true 表示切换成功，播放循环应继续；false 表示没有预加载
+    private func transitionToNextTrack() -> Bool {
+        // 原子性地取出预加载的组件
+        let (nextDemuxer, nextDecoder, nextInfo, nextTimeBase, nextConnMgr) = stateQueue.sync {
+            () -> (Demuxer?, AudioDecoder?, StreamInfo?, AVRational, ConnectionManager?) in
+            guard isNextReady else { return (nil, nil, nil, AVRational(num: 0, den: 1), nil) }
+
+            let d = self.nextDemuxer
+            let dec = self.nextAudioDecoder
+            let info = self.nextStreamInfo
+            let tb = self.nextAudioTimeBase
+            let cm = self.nextConnectionManager
+
+            // 清空预加载状态
+            self.nextDemuxer = nil
+            self.nextAudioDecoder = nil
+            self.nextStreamInfo = nil
+            self.nextAudioTimeBase = AVRational(num: 0, den: 1)
+            self.nextConnectionManager = nil
+            self.nextURL = nil
+            self.isNextReady = false
+
+            return (d, dec, info, tb, cm)
+        }
+
+        guard let demuxer = nextDemuxer, let decoder = nextDecoder, let info = nextInfo else {
+            return false
+        }
+
+        // 释放旧的 pipeline 组件（但不停止 AudioRenderer）
+        stateQueue.sync {
+            self.audioDecoder = nil
+            self.videoDecoder = nil
+            // 旧的 demuxer 和 connectionManager 会被新的替换后自动释放
+            self.demuxer = demuxer
+            self.audioDecoder = decoder
+            self.connectionManager = nextConnMgr
+            self.streamInfo = info
+            self.audioTimeBase = nextTimeBase
+            self.currentTime = 0
+            self.currentURL = info.url
+        }
+
+        // 重置同步控制器
+        syncController.reset()
+
+        // 通知 duration
+        if let duration = info.duration {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.delegate?.player(self, didUpdateDuration: duration)
+            }
+        }
+
+        // 通知 app 层已切换到下一首
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.delegate?.playerDidTransitionToNextTrack(self)
+        }
+
+        return true
+    }
     ///
     /// 使用 packet PTS + audioTimeBase 精确计算播放时间，避免 duration 累加漂移。
     /// 可恢复错误（单帧解码失败）会被跳过，不可恢复错误会触发自动停止。
