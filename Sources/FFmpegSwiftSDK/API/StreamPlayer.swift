@@ -228,6 +228,7 @@ public final class StreamPlayer {
     }
 
     /// 在播放循环中安全执行 seek（仅在 playbackQueue 上调用）
+    /// 无缝模式：不暂停 AudioUnit，只清空缓冲区，新数据到达后自动接续播放
     private func processPendingSeek(demuxer: Demuxer) {
         seekLock.lock()
         guard let seekTime = pendingSeekTime else {
@@ -237,8 +238,7 @@ public final class StreamPlayer {
         pendingSeekTime = nil
         seekLock.unlock()
 
-        // 暂停渲染，清空缓冲区
-        audioRenderer.pause()
+        // 只清空缓冲区队列，不暂停 AudioUnit（空队列时会自动输出静音）
         audioRenderer.flushQueue()
 
         // Flush 解码器
@@ -258,11 +258,6 @@ public final class StreamPlayer {
             }
         } catch {
             // Seek 失败，静默处理
-        }
-
-        // 恢复渲染
-        if state == .playing {
-            audioRenderer.resume()
         }
     }
 

@@ -292,7 +292,12 @@ final class AudioDecoder: Decoder {
     ) throws -> AudioBuffer {
         let frameCount = Int(frame.pointee.nb_samples)
         let channelCount = outputChannelCount
-        let totalSamples = frameCount * channelCount
+
+        // 使用 swr_get_out_samples 计算实际需要的输出缓冲区大小
+        // 这对 FLAC 等格式很重要，SwrContext 内部可能有延迟缓冲
+        let estimatedOutSamples = Int(swr_get_out_samples(swrCtx, Int32(frameCount)))
+        let outFrameCount = max(estimatedOutSamples, frameCount) + 256 // 额外余量
+        let totalSamples = outFrameCount * channelCount
 
         let outputBuffer = UnsafeMutablePointer<Float>.allocate(capacity: totalSamples)
 
@@ -306,13 +311,19 @@ final class AudioDecoder: Decoder {
         let convertedSamples = swr_convert(
             swrCtx,
             &outputPtr,
-            Int32(frameCount),
+            Int32(outFrameCount),
             inputPtr,
             Int32(frameCount)
         )
 
-        guard convertedSamples >= 0 else {
+        guard convertedSamples > 0 else {
             outputBuffer.deallocate()
+            if convertedSamples == 0 {
+                // 没有输出采样，返回空 buffer
+                let emptyBuf = UnsafeMutablePointer<Float>.allocate(capacity: 1)
+                emptyBuf.pointee = 0
+                return AudioBuffer(data: emptyBuf, frameCount: 0, channelCount: channelCount, sampleRate: outputSampleRate)
+            }
             throw FFmpegError.decodingFailed(
                 code: convertedSamples,
                 message: "swr_convert failed"
