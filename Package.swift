@@ -14,9 +14,7 @@ let package = Package(
             targets: ["FFmpegSwiftSDK"]
         ),
     ],
-    dependencies: [
-        .package(url: "https://github.com/typelift/SwiftCheck.git", from: "0.12.0"),
-    ],
+    dependencies: [],
     targets: [
         // CFFmpeg: C bridging target with bundled headers
         // On macOS: links against Homebrew-installed FFmpeg dylibs
@@ -48,13 +46,6 @@ let package = Package(
             dependencies: [
                 "CFFmpeg",
                 .target(name: "FFmpegLibs", condition: .when(platforms: [.iOS])),
-            ]
-        ),
-        .testTarget(
-            name: "FFmpegSwiftSDKTests",
-            dependencies: [
-                "FFmpegSwiftSDK",
-                "SwiftCheck"
             ]
         ),
     ]

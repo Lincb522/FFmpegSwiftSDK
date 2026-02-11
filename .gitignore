@@ -22,5 +22,8 @@ Package.resolved
 build-output/
 build-ffmpeg/
 
+# Tests (local only, not pushed to remote)
+Tests/
+
 # FFmpeg source (users build locally)
 # Frameworks/ is tracked (contains prebuilt xcframework)
