@@ -143,6 +143,10 @@ public final class StreamPlayer {
     private var pendingSeekTime: TimeInterval? = nil
     private let seekLock = NSLock()
 
+    /// seek 后的目标时间，用于抑制 seek 点之前的旧 PTS 更新 currentTime
+    /// demuxer seek 到关键帧（通常在目标之前），解码出的前几个 packet PTS 会小于目标
+    private var seekTargetTime: TimeInterval? = nil
+
     /// 音频流的 time_base，用于将 packet PTS 精确转换为秒
     private var audioTimeBase: AVRational = AVRational(num: 0, den: 1)
 
@@ -330,6 +334,8 @@ public final class StreamPlayer {
             try demuxer.seek(to: seekTime)
             stateQueue.sync {
                 self.currentTime = seekTime
+                // 记录 seek 目标，抑制 seek 点之前的旧 PTS 更新
+                self.seekTargetTime = seekTime
             }
         } catch {
             // Seek 失败，静默处理
@@ -815,7 +821,17 @@ public final class StreamPlayer {
                 syncController.updateAudioClock(pts)
 
                 stateQueue.sync {
-                    self.currentTime = pts
+                    // seek 后，如果 PTS 还没到目标位置，不更新 currentTime（防止进度条回跳）
+                    if let target = self.seekTargetTime {
+                        if pts >= target {
+                            // 已到达或超过 seek 目标，清除标记，恢复正常更新
+                            self.seekTargetTime = nil
+                            self.currentTime = pts
+                        }
+                        // PTS < target：跳过更新，保持 currentTime 在 seek 目标位置
+                    } else {
+                        self.currentTime = pts
+                    }
                 }
             }
 
@@ -944,6 +960,11 @@ public final class StreamPlayer {
         seekLock.lock()
         pendingSeekTime = nil
         seekLock.unlock()
+        
+        // 清除 seek 目标时间
+        stateQueue.sync {
+            seekTargetTime = nil
+        }
 
         // Stop renderers
         audioRenderer.stop()
