@@ -1,7 +1,8 @@
 // ContentView.swift
-// FFmpegDemo — HiFi Player
+// FFmpegDemo — HiFi Player + Video
 
 import SwiftUI
+import AVFoundation
 import FFmpegSwiftSDK
 
 struct ContentView: View {
@@ -10,7 +11,6 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // Background gradient
             LinearGradient(
                 colors: [Color(hex: 0x0D0D0D), Color(hex: 0x1A1A2E)],
                 startPoint: .top, endPoint: .bottom
@@ -68,7 +68,7 @@ struct ContentView: View {
 
     private var nowPlayingCard: some View {
         VStack(spacing: 16) {
-            // Album art placeholder
+            // Video / Album art area
             ZStack {
                 RoundedRectangle(cornerRadius: 16)
                     .fill(
@@ -77,20 +77,38 @@ struct ContentView: View {
                             startPoint: .topLeading, endPoint: .bottomTrailing
                         )
                     )
-                    .frame(height: 200)
+                    .frame(height: vm.hasVideo ? 220 : 200)
 
-                VStack(spacing: 12) {
-                    Image(systemName: stateIcon)
-                        .font(.system(size: 48))
-                        .foregroundStyle(stateAccent)
-                        .opacity(vm.state == "播放中" ? 1.0 : 0.6)
+                if vm.hasVideo {
+                    // Video display layer
+                    VideoLayerView(layer: vm.videoLayer)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(4)
+                } else {
+                    // Audio-only placeholder
+                    VStack(spacing: 12) {
+                        Image(systemName: stateIcon)
+                            .font(.system(size: 48))
+                            .foregroundStyle(stateAccent)
+                            .opacity(vm.state == "播放中" ? 1.0 : 0.6)
 
-                    Text(vm.state)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.7))
+                        Text(vm.state)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                }
+            }
 
+            // Stream info
+            if !vm.streamInfoText.isEmpty || !vm.videoInfoText.isEmpty {
+                VStack(spacing: 2) {
                     if !vm.streamInfoText.isEmpty {
                         Text(vm.streamInfoText)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                    if !vm.videoInfoText.isEmpty {
+                        Text("🎬 " + vm.videoInfoText)
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.4))
                     }
@@ -102,7 +120,7 @@ struct ContentView: View {
                 Image(systemName: "link")
                     .foregroundStyle(.gray)
                     .font(.system(size: 14))
-                TextField("输入音源地址", text: $vm.urlText)
+                TextField("输入音视频地址", text: $vm.urlText)
                     .font(.system(size: 14))
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
@@ -155,7 +173,6 @@ struct ContentView: View {
 
             controlButton(icon: "stop.fill", size: 18) { vm.stop() }
 
-            // Main play button
             Button(action: {
                 if vm.state == "已暂停" { vm.resume() }
                 else { vm.play() }
@@ -204,7 +221,6 @@ struct ContentView: View {
                     .foregroundStyle(Color(hex: 0xBB86FC))
             }
 
-            // 10-band EQ
             HStack(alignment: .center, spacing: 0) {
                 ForEach(EQBand.allCases, id: \.rawValue) { band in
                     eqColumn(band: band)
@@ -212,7 +228,6 @@ struct ContentView: View {
             }
             .padding(.vertical, 8)
 
-            // dB scale
             HStack {
                 Text("+12 dB").font(.system(size: 8))
                 Spacer()
@@ -283,10 +298,28 @@ struct ContentView: View {
     }
 }
 
+
+// MARK: - VideoLayerView (UIViewRepresentable)
+
+/// Wraps an AVSampleBufferDisplayLayer in a UIView for SwiftUI embedding.
+struct VideoLayerView: UIViewRepresentable {
+    let layer: AVSampleBufferDisplayLayer
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        layer.frame = view.bounds
+        view.layer.addSublayer(layer)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        layer.frame = uiView.bounds
+    }
+}
+
 // MARK: - Vertical EQ Slider
 
-/// A custom vertical slider for EQ bands using DragGesture.
-/// Avoids the broken rotated-Slider approach where touch input maps incorrectly.
 struct VerticalEQSlider: View {
     @Binding var value: Float
     let range: ClosedRange<Float>
@@ -296,17 +329,14 @@ struct VerticalEQSlider: View {
         GeometryReader { geo in
             let h = geo.size.height
             let span = range.upperBound - range.lowerBound
-            // normalized 0 (bottom = min) to 1 (top = max)
             let norm = CGFloat((value - range.lowerBound) / span)
             let thumbY = h * (1 - norm)
 
             ZStack {
-                // Track background
                 Capsule()
                     .fill(Color.white.opacity(0.1))
                     .frame(width: 3)
 
-                // Active fill from center
                 let centerY = h * 0.5
                 let fillTop = min(centerY, thumbY)
                 let fillH = abs(thumbY - centerY)
@@ -315,13 +345,11 @@ struct VerticalEQSlider: View {
                     .frame(width: 3, height: fillH)
                     .position(x: geo.size.width / 2, y: fillTop + fillH / 2)
 
-                // Center line
                 Rectangle()
                     .fill(Color.white.opacity(0.2))
                     .frame(width: 10, height: 1)
                     .position(x: geo.size.width / 2, y: centerY)
 
-                // Thumb
                 Circle()
                     .fill(accentColor)
                     .frame(width: 14, height: 14)
@@ -335,7 +363,6 @@ struct VerticalEQSlider: View {
                         let clamped = max(0, min(drag.location.y, h))
                         let newNorm = 1 - Float(clamped / h)
                         let raw = range.lowerBound + newNorm * span
-                        // Snap to 0.5 dB steps
                         value = (raw * 2).rounded() / 2
                     }
             )

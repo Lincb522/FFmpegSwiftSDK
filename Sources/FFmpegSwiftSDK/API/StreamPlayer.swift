@@ -8,6 +8,7 @@
 import Foundation
 import CFFmpeg
 import AudioToolbox
+import AVFoundation
 
 // MARK: - PlaybackState
 
@@ -84,6 +85,17 @@ public final class StreamPlayer {
 
     /// The public audio equalizer for adjusting frequency band gains.
     public let equalizer: AudioEqualizer
+
+    /// The video display layer. Add this to your view's layer hierarchy to show video.
+    ///
+    /// Usage (UIKit):
+    /// ```swift
+    /// view.layer.addSublayer(player.videoDisplayLayer)
+    /// player.videoDisplayLayer.frame = view.bounds
+    /// ```
+    public var videoDisplayLayer: AVSampleBufferDisplayLayer {
+        return videoRenderer.sampleBufferDisplayLayer
+    }
 
     // MARK: - Internal Components
 

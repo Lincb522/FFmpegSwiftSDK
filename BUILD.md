@@ -1,13 +1,13 @@
 # 🔨 从源码编译 FFmpeg for iOS
 
-本文档介绍如何交叉编译 FFmpeg 7.1 并生成 `FFmpegLibs.xcframework`。
+本文档介绍如何交叉编译 FFmpeg 8.0 并生成 `FFmpegLibs.xcframework`。
 
 ---
 
 ## 📋 前置条件
 
 - macOS + Xcode 15+ 及 Command Line Tools
-- FFmpeg 7.1 源码
+- FFmpeg 8.0 源码
 
 ---
 
@@ -15,11 +15,11 @@
 
 ```bash
 mkdir -p build-ffmpeg && cd build-ffmpeg
-curl -L https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz | tar xJ
+curl -L https://ffmpeg.org/releases/ffmpeg-8.0.tar.xz | tar xJ
 cd ..
 ```
 
-源码位于 `build-ffmpeg/ffmpeg-7.1/`。
+源码位于 `build-ffmpeg/ffmpeg-8.0/`。
 
 ---
 

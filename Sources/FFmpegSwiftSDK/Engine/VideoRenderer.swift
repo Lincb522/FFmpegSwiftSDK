@@ -1,93 +1,47 @@
 // VideoRenderer.swift
 // FFmpegSwiftSDK
 //
-// Renders decoded video frames to a caller-provided display layer.
-// Uses AVSampleBufferDisplayLayer for efficient CVPixelBuffer rendering
-// on both macOS and iOS.
+// Renders decoded video frames using AVSampleBufferDisplayLayer.
+// The layer is exposed publicly so callers can embed it in their view hierarchy.
 
 import Foundation
 import CoreVideo
 import QuartzCore
 import AVFoundation
 
-/// Renders decoded video frames onto a `CALayer` provided by the caller.
+/// Renders decoded video frames via an `AVSampleBufferDisplayLayer`.
 ///
-/// `VideoRenderer` wraps an `AVSampleBufferDisplayLayer` to efficiently display
-/// `CVPixelBuffer` content from decoded `VideoFrame` instances. The display layer
-/// is attached to a caller-provided `CALayer` via `attach(to:)`.
+/// The `sampleBufferDisplayLayer` is created once at init and can be embedded
+/// directly into a UIView/NSView layer hierarchy by the caller.
 ///
-/// Usage:
-/// ```swift
-/// let renderer = VideoRenderer()
-/// renderer.attach(to: someView.layer)
-/// renderer.render(decodedFrame)
-/// // ...
-/// renderer.clear()
-/// ```
-///
-/// Thread safety: All rendering operations are dispatched to the main thread
+/// Thread safety: Enqueue operations are dispatched to the main thread
 /// to comply with Core Animation's threading requirements.
 final class VideoRenderer {
 
     // MARK: - Properties
 
-    /// The caller-provided layer that hosts the display layer.
-    private weak var displayLayer: CALayer?
-
-    /// The sample buffer display layer used for efficient CVPixelBuffer rendering.
-    private var sampleBufferLayer: AVSampleBufferDisplayLayer?
+    /// The display layer for video rendering. Embed this in your view hierarchy.
+    let sampleBufferDisplayLayer: AVSampleBufferDisplayLayer
 
     // MARK: - Initialization
 
-    init() {}
-
-    deinit {
-        clear()
+    init() {
+        sampleBufferDisplayLayer = AVSampleBufferDisplayLayer()
+        sampleBufferDisplayLayer.videoGravity = .resizeAspect
     }
 
-    // MARK: - Public Interface
+    // MARK: - Rendering
 
-    /// Attaches the renderer to a display layer.
-    ///
-    /// Creates an `AVSampleBufferDisplayLayer` and adds it as a sublayer of the
-    /// provided layer. Any previously attached layer is cleared first.
-    ///
-    /// - Parameter layer: The `CALayer` to render video frames into.
-    func attach(to layer: CALayer) {
-        // Clean up any previous attachment
-        clear()
-
-        displayLayer = layer
-
-        let sbLayer = AVSampleBufferDisplayLayer()
-        sbLayer.videoGravity = .resizeAspect
-        sbLayer.frame = layer.bounds
-
-        let targetLayer = layer
-        let targetSBLayer = sbLayer
-        if Thread.isMainThread {
-            targetLayer.addSublayer(targetSBLayer)
-        } else {
-            DispatchQueue.main.sync {
-                targetLayer.addSublayer(targetSBLayer)
-            }
-        }
-
-        sampleBufferLayer = sbLayer
-    }
-
-    /// Renders a decoded video frame to the attached display layer.
+    /// Renders a decoded video frame.
     ///
     /// Converts the frame's `CVPixelBuffer` into a `CMSampleBuffer` and enqueues
-    /// it on the `AVSampleBufferDisplayLayer` for display.
+    /// it on the display layer.
     ///
     /// - Parameter frame: The decoded video frame to render.
     func render(_ frame: VideoFrame) {
-        guard let sbLayer = sampleBufferLayer else { return }
-
         guard let sampleBuffer = createSampleBuffer(from: frame) else { return }
 
-        let layer = sbLayer
+        let layer = sampleBufferDisplayLayer
         let buffer = sampleBuffer
         if Thread.isMainThread {
             layer.enqueue(buffer)
@@ -98,34 +52,20 @@ final class VideoRenderer {
         }
     }
 
-    /// Clears the display and removes the rendering layer.
-    ///
-    /// Flushes any pending frames and removes the sample buffer display layer
-    /// from its parent. After calling `clear()`, you must call `attach(to:)`
-    /// again before rendering.
+    /// Clears the display, flushing any pending frames.
     func clear() {
-        if let sbLayer = sampleBufferLayer {
-            let layer = sbLayer
-            if Thread.isMainThread {
+        let layer = sampleBufferDisplayLayer
+        if Thread.isMainThread {
+            layer.flushAndRemoveImage()
+        } else {
+            DispatchQueue.main.sync {
                 layer.flushAndRemoveImage()
-                layer.removeFromSuperlayer()
-            } else {
-                DispatchQueue.main.sync {
-                    layer.flushAndRemoveImage()
-                    layer.removeFromSuperlayer()
-                }
             }
         }
-        sampleBufferLayer = nil
-        displayLayer = nil
     }
 
     // MARK: - Private Helpers
 
-    /// Creates a `CMSampleBuffer` from a `VideoFrame`'s pixel buffer and timing info.
-    ///
-    /// - Parameter frame: The video frame to convert.
-    /// - Returns: A `CMSampleBuffer` ready for display, or `nil` if creation fails.
     private func createSampleBuffer(from frame: VideoFrame) -> CMSampleBuffer? {
         var formatDescription: CMVideoFormatDescription?
         let status = CMVideoFormatDescriptionCreateForImageBuffer(

@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build-ffmpeg"
-FFMPEG_SRC="$BUILD_DIR/ffmpeg-7.1"
+FFMPEG_SRC="$BUILD_DIR/ffmpeg-8.0"
 IOS_MIN_VERSION="16.0"
 
 # All common audio decoders
@@ -34,7 +34,6 @@ COMMON_FLAGS="--enable-static \
     --enable-muxer=null \
     --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
     --disable-avdevice \
-    --disable-postproc \
     --enable-network \
     --disable-asm"
 

@@ -3,6 +3,7 @@
 
 import Foundation
 import FFmpegSwiftSDK
+import AVFoundation
 import Combine
 
 @MainActor
@@ -17,6 +18,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var currentTime: TimeInterval = 0
     @Published var streamInfoText: String = ""
     @Published var hifiInfoText: String = ""
+    @Published var videoInfoText: String = ""
+    @Published var hasVideo: Bool = false
 
     // 10-band EQ gains
     @Published var eqGains: [EQBand: Float] = {
@@ -28,9 +31,14 @@ final class PlayerViewModel: ObservableObject {
 
     // MARK: - Private
 
-    private let player = StreamPlayer()
+    let player = StreamPlayer()
     private let delegateAdapter = PlayerDelegateAdapter()
     private var timer: Timer?
+
+    /// The video display layer from the player, for embedding in the view.
+    var videoLayer: AVSampleBufferDisplayLayer {
+        player.videoDisplayLayer
+    }
 
     init() {
         delegateAdapter.viewModel = self
@@ -54,6 +62,8 @@ final class PlayerViewModel: ObservableObject {
         player.stop()
         stopTimeUpdater()
         currentTime = 0
+        hasVideo = false
+        videoInfoText = ""
     }
 
     // MARK: - EQ
@@ -88,9 +98,12 @@ final class PlayerViewModel: ObservableObject {
         guard let info = info else {
             streamInfoText = ""
             hifiInfoText = ""
+            videoInfoText = ""
+            hasVideo = false
             return
         }
 
+        // Audio info
         var parts: [String] = []
         if let codec = info.audioCodec { parts.append(codec.uppercased()) }
         if let sr = info.sampleRate {
@@ -105,6 +118,17 @@ final class PlayerViewModel: ObservableObject {
             parts.append(ch == 1 ? "Mono" : ch == 2 ? "Stereo" : "\(ch)ch")
         }
         streamInfoText = parts.joined(separator: " / ")
+
+        // Video info
+        hasVideo = info.hasVideo
+        if info.hasVideo {
+            var vParts: [String] = []
+            if let vc = info.videoCodec { vParts.append(vc.uppercased()) }
+            if let w = info.width, let h = info.height { vParts.append("\(w)×\(h)") }
+            videoInfoText = vParts.joined(separator: " / ")
+        } else {
+            videoInfoText = ""
+        }
 
         // HiFi quality indicator
         let isLossless = ["flac", "alac", "ape", "wav", "pcm_s16le", "pcm_s24le", "pcm_s32le",

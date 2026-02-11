@@ -5,7 +5,7 @@ set -e
 # Builds FFmpeg static libraries for iOS arm64 and simulator arm64
 # Then creates an xcframework for Swift Package Manager integration
 
-FFMPEG_VERSION="7.1"
+FFMPEG_VERSION="8.0"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build-ffmpeg"
@@ -87,7 +87,6 @@ build_ffmpeg() {
         --enable-muxer=null \
         --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
         --disable-avdevice \
-        --disable-postproc \
         --disable-network \
         --enable-network \
         --disable-asm

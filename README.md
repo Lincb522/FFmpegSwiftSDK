@@ -1,13 +1,13 @@
 <p align="center">
   <h1 align="center">🎵 FFmpegSwiftSDK</h1>
   <p align="center">
-    基于 FFmpeg 7.1 的 iOS 流媒体播放 Swift SDK<br/>
+    基于 FFmpeg 8.0 的 iOS 流媒体播放 Swift SDK<br/>
     支持实时 10 段 EQ 均衡器 · HiFi 无损音频 · 音视频同步
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/platform-iOS%2016%2B-blue?style=flat-square" />
     <img src="https://img.shields.io/badge/swift-5.9%2B-orange?style=flat-square" />
-    <img src="https://img.shields.io/badge/FFmpeg-7.1-green?style=flat-square" />
+    <img src="https://img.shields.io/badge/FFmpeg-8.0-green?style=flat-square" />
     <img src="https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square" />
     <img src="https://img.shields.io/badge/SPM-compatible-brightgreen?style=flat-square" />
   </p>
@@ -46,7 +46,7 @@
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Lincb522/FFmpegSwiftSDK.git", from: "0.1.0")
+    .package(url: "https://github.com/Lincb522/FFmpegSwiftSDK.git", from: "0.2.0")
 ]
 ```
 
@@ -71,6 +71,21 @@ player.play(url: "https://example.com/music.flac")
 player.pause()
 player.resume()
 player.stop()
+```
+
+### 视频播放
+
+```swift
+import FFmpegSwiftSDK
+
+let player = StreamPlayer()
+
+// 将视频图层添加到视图层级
+view.layer.addSublayer(player.videoDisplayLayer)
+player.videoDisplayLayer.frame = view.bounds
+
+// 播放视频流
+player.play(url: "https://example.com/video.mp4")
 ```
 
 ### 实时 EQ 均衡器
