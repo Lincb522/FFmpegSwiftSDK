@@ -79,6 +79,7 @@ build_ffmpeg() {
         --enable-pic \
         --enable-small \
         --enable-swresample \
+        --enable-swscale \
         --enable-avfilter \
         --enable-videotoolbox \
         --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox \
@@ -110,7 +111,7 @@ DEVICE_PREFIX="$BUILD_DIR/output-iphoneos-arm64"
 SIM_PREFIX="$BUILD_DIR/output-iphonesimulator-arm64"
 
 # Create fat libraries per platform (only one arch each here, but structure is ready)
-LIBS="libavformat libavcodec libavutil libswresample libavfilter"
+LIBS="libavformat libavcodec libavutil libswresample libswscale libavfilter"
 
 # Create xcframework output directory
 rm -rf "$OUTPUT_DIR"
