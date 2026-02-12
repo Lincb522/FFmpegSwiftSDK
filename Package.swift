@@ -39,8 +39,8 @@ let package = Package(
         // 远程引用：从 GitHub Release 下载预编译的 xcframework
         .binaryTarget(
             name: "FFmpegLibs",
-            url: "https://github.com/Lincb522/FFmpegSwiftSDK/releases/download/0.2.0/FFmpegLibs.xcframework.zip",
-            checksum: "7f774f68283784a7527b6d211d3b48fa81d716f146029f58b2ac84373b38c2d6"
+            url: "https://github.com/Lincb522/FFmpegSwiftSDK/releases/download/0.3.0/FFmpegLibs.xcframework.zip",
+            checksum: "44badabd5d362561e74cbb914db3e42a263f332c51fa4c18f6c2600a47ab52c5"
         ),
 
         .target(

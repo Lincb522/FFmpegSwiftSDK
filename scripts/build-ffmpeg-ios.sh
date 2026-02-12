@@ -80,16 +80,18 @@ build_ffmpeg() {
         --enable-small \
         --enable-swresample \
         --enable-avfilter \
-        --enable-decoder=h264,hevc,aac,mp3,mp3float,pcm_s16le,pcm_f32le \
-        --enable-demuxer=mov,mpegts,flv,hls,rtsp,mp3,aac,pcm_s16le,pcm_f32le \
-        --enable-parser=h264,hevc,aac,mpegaudio \
-        --enable-protocol=file,http,https,tcp,udp,hls,rtmp \
+        --enable-videotoolbox \
+        --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox \
+        --enable-decoder=h264,hevc,aac,mp3,mp3float,flac,alac,vorbis,opus,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le \
+        --enable-demuxer=mov,mpegts,flv,hls,rtsp,mp3,aac,flac,ogg,wav,matroska,pcm_s16le,pcm_f32le,pcm_s24le,pcm_s32le \
+        --enable-parser=h264,hevc,aac,mpegaudio,flac,vorbis,opus \
+        --enable-protocol=file,http,https,tcp,udp,hls,rtmp,concat,data \
         --enable-muxer=null \
+        --enable-filter=equalizer,superequalizer,volume,loudnorm,atempo,aformat,aresample \
         --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
         --disable-avdevice \
         --disable-network \
-        --enable-network \
-        --disable-asm
+        --enable-network
 
     make -j$(sysctl -n hw.ncpu)
     make install
@@ -128,9 +130,21 @@ done
 # Also copy headers to a local include directory for the CFFmpeg module
 echo ">>> Copying headers for CFFmpeg module..."
 HEADERS_DIR="$PROJECT_DIR/Sources/CFFmpeg/include"
+# 备份自定义文件（shim.h + module.modulemap）
+BACKUP_DIR="/tmp/cffmpeg_backup"
+rm -rf "$BACKUP_DIR"
+mkdir -p "$BACKUP_DIR"
+for f in shim.h module.modulemap; do
+    [ -f "$HEADERS_DIR/$f" ] && cp "$HEADERS_DIR/$f" "$BACKUP_DIR/$f"
+done
 rm -rf "$HEADERS_DIR"
 mkdir -p "$HEADERS_DIR"
 cp -R "$DEVICE_PREFIX/include/"* "$HEADERS_DIR/"
+# 恢复自定义文件
+for f in shim.h module.modulemap; do
+    [ -f "$BACKUP_DIR/$f" ] && cp "$BACKUP_DIR/$f" "$HEADERS_DIR/$f"
+done
+rm -rf "$BACKUP_DIR"
 
 echo ""
 echo "=== Build Complete ==="

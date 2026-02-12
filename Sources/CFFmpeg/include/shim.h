@@ -10,6 +10,8 @@
 #include "libavutil/samplefmt.h"
 #include "libavutil/mathematics.h"
 #include "libavutil/error.h"
+#include "libavutil/hwcontext.h"
+#include "libavutil/hwcontext_videotoolbox.h"
 #include "libswresample/swresample.h"
 #include "libavfilter/avfilter.h"
 
