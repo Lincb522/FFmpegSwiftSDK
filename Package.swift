@@ -43,7 +43,7 @@ let package = Package(
         .binaryTarget(
             name: "FFmpegLibs",
             url: "https://github.com/Lincb522/FFmpegSwiftSDK/releases/download/0.4.0/FFmpegLibs.xcframework.zip",
-            checksum: "ac0db7b26d380eabe2051fdde7eb7becd6a5cd4e2c02ebdf93e8d5c9ffe532b8"
+            checksum: "e1fc45343a3e28621f57453168d2fa5766585ef2cbc5c396c4f6d258e618220c"
         ),
 
         .target(

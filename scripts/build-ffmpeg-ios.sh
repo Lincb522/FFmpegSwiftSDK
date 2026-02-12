@@ -104,14 +104,33 @@ build_ffmpeg "iphoneos" "arm64"
 # Build for iOS simulator (arm64 for Apple Silicon Macs)
 build_ffmpeg "iphonesimulator" "arm64"
 
+# Build for iOS simulator (x86_64 for Intel Macs)
+build_ffmpeg "iphonesimulator" "x86_64"
+
 echo ""
-echo ">>> Creating xcframework..."
+echo ">>> Merging simulator architectures with lipo..."
 
 DEVICE_PREFIX="$BUILD_DIR/output-iphoneos-arm64"
-SIM_PREFIX="$BUILD_DIR/output-iphonesimulator-arm64"
+SIM_ARM64="$BUILD_DIR/output-iphonesimulator-arm64"
+SIM_X86="$BUILD_DIR/output-iphonesimulator-x86_64"
+SIM_FAT="$BUILD_DIR/output-iphonesimulator-fat"
 
-# Create fat libraries per platform (only one arch each here, but structure is ready)
+rm -rf "$SIM_FAT"
+mkdir -p "$SIM_FAT/lib"
+cp -R "$SIM_ARM64/include" "$SIM_FAT/include"
+
 LIBS="libavformat libavcodec libavutil libswresample libswscale libavfilter"
+
+for LIB in $LIBS; do
+    echo "  lipo merging ${LIB}..."
+    lipo -create \
+        "$SIM_ARM64/lib/${LIB}.a" \
+        "$SIM_X86/lib/${LIB}.a" \
+        -output "$SIM_FAT/lib/${LIB}.a"
+done
+
+echo ""
+echo ">>> Creating xcframework..."
 
 # Create xcframework output directory
 rm -rf "$OUTPUT_DIR"
@@ -123,8 +142,8 @@ for LIB in $LIBS; do
     xcodebuild -create-xcframework \
         -library "$DEVICE_PREFIX/lib/${LIB}.a" \
         -headers "$DEVICE_PREFIX/include" \
-        -library "$SIM_PREFIX/lib/${LIB}.a" \
-        -headers "$SIM_PREFIX/include" \
+        -library "$SIM_FAT/lib/${LIB}.a" \
+        -headers "$SIM_FAT/include" \
         -output "$OUTPUT_DIR/${LIB}.xcframework"
 done
 

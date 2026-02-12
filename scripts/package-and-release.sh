@@ -14,7 +14,23 @@ SDK_TAG="0.9.5"
 REPO="Lincb522/FFmpegSwiftSDK"
 
 DEVICE_PREFIX="$BUILD_DIR/output-iphoneos-arm64"
-SIM_PREFIX="$BUILD_DIR/output-iphonesimulator-arm64"
+SIM_ARM64="$BUILD_DIR/output-iphonesimulator-arm64"
+SIM_X86="$BUILD_DIR/output-iphonesimulator-x86_64"
+SIM_PREFIX="$BUILD_DIR/output-iphonesimulator-fat"
+
+# 如果 fat 目录不存在，先用 lipo 合并
+if [ ! -d "$SIM_PREFIX" ]; then
+    echo ">>> 合并模拟器架构 (arm64 + x86_64)..."
+    mkdir -p "$SIM_PREFIX/lib"
+    cp -R "$SIM_ARM64/include" "$SIM_PREFIX/include"
+    for LIB in libavformat libavcodec libavutil libswresample libswscale libavfilter; do
+        if [ -f "$SIM_ARM64/lib/${LIB}.a" ] && [ -f "$SIM_X86/lib/${LIB}.a" ]; then
+            lipo -create "$SIM_ARM64/lib/${LIB}.a" "$SIM_X86/lib/${LIB}.a" -output "$SIM_PREFIX/lib/${LIB}.a"
+        elif [ -f "$SIM_ARM64/lib/${LIB}.a" ]; then
+            cp "$SIM_ARM64/lib/${LIB}.a" "$SIM_PREFIX/lib/${LIB}.a"
+        fi
+    done
+fi
 
 echo "=== Step 1: 合并静态库 (libtool -static) ==="
 
@@ -91,7 +107,7 @@ git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
 gh release create "$RELEASE_TAG" \
     "$ZIP_PATH" \
     --title "FFmpeg 8.0 iOS Binary (with swscale)" \
-    --notes "FFmpeg 8.0 预编译静态库 (arm64 device + arm64 simulator)
+    --notes "FFmpeg 8.0 预编译静态库 (arm64 device + arm64/x86_64 simulator)
 包含: avformat, avcodec, avutil, swresample, swscale, avfilter
 新增: libswscale (视频缩放)
 硬件加速: VideoToolbox (H.264/HEVC)

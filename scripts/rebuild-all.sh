@@ -94,7 +94,7 @@ rm -rf "$SIM_FAT"
 mkdir -p "$SIM_FAT/lib"
 cp -R "$SIM_ARM64/include" "$SIM_FAT/include"
 
-for LIB in libavformat libavcodec libavutil libswresample libavfilter; do
+for LIB in libavformat libavcodec libavutil libswresample libswscale libavfilter; do
     echo "  lipo merging ${LIB}..."
     lipo -create \
         "$SIM_ARM64/lib/${LIB}.a" \
@@ -109,6 +109,8 @@ libtool -static -o "${DEVICE_PREFIX}/lib/libFFmpegAll.a" \
     "${DEVICE_PREFIX}/lib/libavcodec.a" \
     "${DEVICE_PREFIX}/lib/libavutil.a" \
     "${DEVICE_PREFIX}/lib/libswresample.a" \
+    "${DEVICE_PREFIX}/lib/libswresample.a" \
+    "${DEVICE_PREFIX}/lib/libswscale.a" \
     "${DEVICE_PREFIX}/lib/libavfilter.a"
 
 libtool -static -o "${SIM_FAT}/lib/libFFmpegAll.a" \
