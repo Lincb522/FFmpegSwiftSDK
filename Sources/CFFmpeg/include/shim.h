@@ -14,5 +14,7 @@
 #include "libavutil/hwcontext_videotoolbox.h"
 #include "libswresample/swresample.h"
 #include "libavfilter/avfilter.h"
+#include "libavfilter/buffersrc.h"
+#include "libavfilter/buffersink.h"
 
 #endif /* CFFmpeg_shim_h */

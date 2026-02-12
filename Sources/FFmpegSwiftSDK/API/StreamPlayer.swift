@@ -88,6 +88,12 @@ public final class StreamPlayer {
     /// The public audio equalizer for adjusting frequency band gains.
     public let equalizer: AudioEqualizer
 
+    /// 音频效果控制器：音量、变速、响度标准化。
+    public let audioEffects: AudioEffects
+
+    /// 18 段高精度均衡器（基于 FFmpeg superequalizer 滤镜）。
+    public let superEQ: SuperEqualizer
+
     /// The video display layer. Add this to your view's layer hierarchy to show video.
     ///
     /// Usage (UIKit):
@@ -99,10 +105,22 @@ public final class StreamPlayer {
         return videoRenderer.sampleBufferDisplayLayer
     }
 
+    /// 视频是否正在使用 VideoToolbox 硬件加速解码。
+    /// 仅在播放视频流时有意义，无视频时返回 false。
+    public var isVideoHardwareAccelerated: Bool {
+        return stateQueue.sync { videoDecoder?.isHardwareAccelerated ?? false }
+    }
+
     // MARK: - Internal Components
 
     /// The EQ filter used for audio processing.
     internal let eqFilter: EQFilter
+
+    /// FFmpeg avfilter 音频滤镜图（loudnorm、atempo、volume）
+    internal let audioFilterGraph: AudioFilterGraph
+
+    /// SuperEqualizer 滤镜图引擎
+    internal let superEQFilterGraph: SuperEQFilterGraph
 
     /// The connection manager for establishing media connections.
     private var connectionManager: ConnectionManager?
@@ -171,11 +189,17 @@ public final class StreamPlayer {
     /// Creates a new `StreamPlayer` with default components.
     public init() {
         self.eqFilter = EQFilter()
+        self.audioFilterGraph = AudioFilterGraph()
+        self.superEQFilterGraph = SuperEQFilterGraph()
         self.equalizer = AudioEqualizer(filter: eqFilter)
+        self.audioEffects = AudioEffects(filterGraph: audioFilterGraph)
+        self.superEQ = SuperEqualizer(filterGraph: superEQFilterGraph)
         self.audioRenderer = AudioRenderer()
         self.videoRenderer = VideoRenderer()
         self.syncController = AVSyncController()
         self.audioRenderer.setEQFilter(eqFilter)
+        self.audioRenderer.setAudioFilterGraph(audioFilterGraph)
+        self.audioRenderer.setSuperEQFilterGraph(superEQFilterGraph)
     }
 
     deinit {

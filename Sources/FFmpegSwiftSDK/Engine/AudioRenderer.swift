@@ -31,6 +31,12 @@ final class AudioRenderer {
     /// Optional EQ filter applied in real-time during the render callback.
     private var eqFilter: EQFilter?
 
+    /// Optional FFmpeg avfilter 音频滤镜图（loudnorm、atempo、volume）
+    private var audioFilterGraph: AudioFilterGraph?
+
+    /// Optional SuperEqualizer 滤镜图（18 段高精度 EQ）
+    private var superEQFilterGraph: SuperEQFilterGraph?
+
     /// Sample rate of the current audio stream (needed by EQ).
     private var sampleRate: Int = 44100
 
@@ -70,6 +76,16 @@ final class AudioRenderer {
     /// Sets the EQ filter to apply in real-time during audio rendering.
     func setEQFilter(_ filter: EQFilter?) {
         eqFilter = filter
+    }
+
+    /// Sets the FFmpeg avfilter 音频滤镜图。
+    func setAudioFilterGraph(_ graph: AudioFilterGraph?) {
+        audioFilterGraph = graph
+    }
+
+    /// Sets the SuperEqualizer 滤镜图。
+    func setSuperEQFilterGraph(_ graph: SuperEQFilterGraph?) {
+        superEQFilterGraph = graph
     }
 
     /// Starts the audio renderer with the given audio format.
@@ -295,6 +311,46 @@ final class AudioRenderer {
         if samplesWritten < totalSamples {
             let remaining = totalSamples - samplesWritten
             output.advanced(by: samplesWritten).update(repeating: 0, count: remaining)
+        }
+
+        // Apply FFmpeg avfilter graph (loudnorm, atempo, volume) before EQ
+        if let graph = audioFilterGraph, graph.isActive, samplesWritten > 0 {
+            let buf = AudioBuffer(
+                data: output,
+                frameCount: frameCount,
+                channelCount: channelCount,
+                sampleRate: sampleRate
+            )
+            let processed = graph.process(buf)
+            if processed.data != output {
+                // 滤镜图产生了新的缓冲区，拷贝回 output
+                let copyCount = min(processed.frameCount * processed.channelCount, totalSamples)
+                output.update(from: processed.data, count: copyCount)
+                // 如果滤镜输出比请求的少（atempo 加速），剩余填静音
+                if copyCount < totalSamples {
+                    output.advanced(by: copyCount).update(repeating: 0, count: totalSamples - copyCount)
+                }
+                processed.data.deallocate()
+            }
+        }
+
+        // Apply SuperEqualizer (18-band FIR EQ) after avfilter graph, before biquad EQ
+        if let superEQ = superEQFilterGraph, superEQ.isEnabled, samplesWritten > 0 {
+            let buf = AudioBuffer(
+                data: output,
+                frameCount: frameCount,
+                channelCount: channelCount,
+                sampleRate: sampleRate
+            )
+            let processed = superEQ.process(buf)
+            if processed.data != output {
+                let copyCount = min(processed.frameCount * processed.channelCount, totalSamples)
+                output.update(from: processed.data, count: copyCount)
+                if copyCount < totalSamples {
+                    output.advanced(by: copyCount).update(repeating: 0, count: totalSamples - copyCount)
+                }
+                processed.data.deallocate()
+            }
         }
 
         // Apply EQ in real-time on the output buffer

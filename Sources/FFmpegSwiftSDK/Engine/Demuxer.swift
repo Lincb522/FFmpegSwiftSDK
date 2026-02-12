@@ -166,6 +166,14 @@ final class Demuxer {
             duration = nil
         }
 
+        // 提取容器格式名称
+        let containerFormat: String?
+        if let iformat = ctx.pointee.iformat, let name = iformat.pointee.name {
+            containerFormat = String(cString: name)
+        } else {
+            containerFormat = nil
+        }
+
         return StreamInfo(
             url: url,
             hasAudio: audioStreamIndex != -1,
@@ -177,7 +185,8 @@ final class Demuxer {
             bitDepth: bitDepth,
             width: width,
             height: height,
-            duration: duration
+            duration: duration,
+            containerFormat: containerFormat
         )
     }
 
