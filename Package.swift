@@ -21,6 +21,9 @@ let package = Package(
         // On iOS: the xcframework binaryTargets provide the static libs
         .target(
             name: "CFFmpeg",
+            dependencies: [
+                .target(name: "FFmpegLibs", condition: .when(platforms: [.iOS])),
+            ],
             path: "Sources/CFFmpeg",
             publicHeadersPath: "include",
             cSettings: [
