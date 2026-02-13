@@ -119,7 +119,8 @@ public final class EQFilter {
             let coeffs = BiquadCoefficients.peakingEQ(
                 gainDB: gainDB,
                 centerFrequency: band.centerFrequency,
-                sampleRate: sampleRate
+                sampleRate: sampleRate,
+                q: band.q
             )
 
             lock.lock()

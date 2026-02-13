@@ -89,7 +89,6 @@ public enum CodecCapabilities {
     /// 支持的音频滤镜列表。
     public static let supportedAudioFilters: [AudioFilterInfo] = [
         AudioFilterInfo(name: "equalizer", displayName: "参数均衡器", description: "频段增益调节"),
-        AudioFilterInfo(name: "superequalizer", displayName: "18段高精度EQ", description: "18 段 SuperEqualizer，HiFi 级精度"),
         AudioFilterInfo(name: "volume", displayName: "音量控制", description: "音量增益/衰减（dB）"),
         AudioFilterInfo(name: "loudnorm", displayName: "响度标准化", description: "EBU R128 响度标准化，解决不同歌曲音量差异"),
         AudioFilterInfo(name: "atempo", displayName: "变速不变调", description: "播放速度调节（0.5x ~ 4.0x），不改变音调"),

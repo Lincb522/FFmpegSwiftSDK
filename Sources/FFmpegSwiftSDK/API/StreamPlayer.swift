@@ -91,9 +91,6 @@ public final class StreamPlayer {
     /// 音频效果控制器：音量、变速、响度标准化。
     public let audioEffects: AudioEffects
 
-    /// 18 段高精度均衡器（基于 FFmpeg superequalizer 滤镜）。
-    public let superEQ: SuperEqualizer
-
     /// The video display layer. Add this to your view's layer hierarchy to show video.
     ///
     /// Usage (UIKit):
@@ -118,9 +115,6 @@ public final class StreamPlayer {
 
     /// FFmpeg avfilter 音频滤镜图（loudnorm、atempo、volume）
     internal let audioFilterGraph: AudioFilterGraph
-
-    /// SuperEqualizer 滤镜图引擎
-    internal let superEQFilterGraph: SuperEQFilterGraph
 
     /// The connection manager for establishing media connections.
     private var connectionManager: ConnectionManager?
@@ -190,16 +184,13 @@ public final class StreamPlayer {
     public init() {
         self.eqFilter = EQFilter()
         self.audioFilterGraph = AudioFilterGraph()
-        self.superEQFilterGraph = SuperEQFilterGraph()
         self.equalizer = AudioEqualizer(filter: eqFilter)
         self.audioEffects = AudioEffects(filterGraph: audioFilterGraph)
-        self.superEQ = SuperEqualizer(filterGraph: superEQFilterGraph)
         self.audioRenderer = AudioRenderer()
         self.videoRenderer = VideoRenderer()
         self.syncController = AVSyncController()
         self.audioRenderer.setEQFilter(eqFilter)
         self.audioRenderer.setAudioFilterGraph(audioFilterGraph)
-        self.audioRenderer.setSuperEQFilterGraph(superEQFilterGraph)
     }
 
     deinit {
@@ -829,6 +820,8 @@ public final class StreamPlayer {
                 audioRenderer.enqueue(audioBuffer)
 
                 // 精确时间计算：优先使用 packet PTS + stream time_base
+                // 注意：这里报告的是 buffer 开始播放的时间，而非结束时间
+                // 避免 +audioBuffer.duration 导致进度条在播放开始时跳前 1-2 秒
                 let pts: TimeInterval
                 let nopts = Int64(bitPattern: UInt64(0x8000000000000000)) // AV_NOPTS_VALUE
                 if packetPTS != nopts && packetPTS >= 0 && timeBase.den > 0 {
@@ -839,7 +832,7 @@ public final class StreamPlayer {
                     for i in 0..<index {
                         offset += audioBuffers[i].duration
                     }
-                    pts = basePTS + offset + audioBuffer.duration
+                    pts = basePTS + offset
                 } else {
                     // PTS 无效，退回 duration 累加（不太精确但可用）
                     pts = stateQueue.sync { self.currentTime } + audioBuffer.duration

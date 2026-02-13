@@ -48,6 +48,25 @@ public enum EQBand: Int, CaseIterable, Comparable {
         }
     }
 
+    /// 每个频段的 Q 值（带宽控制）。
+    /// 低频段用更低的 Q（更宽带宽）以获得更饱满的低频体感，
+    /// 高频段用稍高的 Q 以保持精确度。
+    /// 整体比默认 Q=1.0 更宽，让 10 段之间无缝衔接。
+    public var q: Float {
+        switch self {
+        case .hz31:  return 0.5   // 超低频需要宽带宽
+        case .hz62:  return 0.6
+        case .hz125: return 0.7
+        case .hz250: return 0.7
+        case .hz500: return 0.8
+        case .hz1k:  return 0.8
+        case .hz2k:  return 0.8
+        case .hz4k:  return 0.7
+        case .hz8k:  return 0.6
+        case .hz16k: return 0.5   // 超高频也需要宽带宽
+        }
+    }
+
     /// Human-readable label for this band.
     public var label: String {
         switch self {

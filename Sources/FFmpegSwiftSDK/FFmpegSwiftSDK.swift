@@ -22,10 +22,6 @@
 // ### Audio Effects
 // - ``AudioEffects``          — 音频效果控制器：音量、变速不变调、响度标准化。
 //
-// ### SuperEqualizer
-// - ``SuperEqualizer``        — 18 段高精度均衡器（基于 FFmpeg superequalizer 16383 阶 FIR 滤波器）。
-// - ``SuperEQBand``           — 18 个频段枚举（65Hz ~ 20kHz）。
-//
 // ### Models
 // - ``StreamInfo``            — Metadata about a media stream (codecs, dimensions, duration).
 // - ``VideoFrame``            — Decoded video frame with CVPixelBuffer and timing info.
