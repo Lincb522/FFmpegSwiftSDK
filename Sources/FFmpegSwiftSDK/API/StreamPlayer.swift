@@ -162,6 +162,10 @@ public final class StreamPlayer {
     /// 音频流的 time_base，用于将 packet PTS 精确转换为秒
     private var audioTimeBase: AVRational = AVRational(num: 0, den: 1)
 
+    /// 首个 audio packet 的 PTS（秒），用于消除容器/编码器起始偏移
+    /// 很多音频文件第一个 packet PTS 不是 0（编码器延迟、容器头部偏移等）
+    private var audioPTSOffset: TimeInterval? = nil
+
     // MARK: - Gapless Playback (预加载下一首)
 
     /// 预加载的下一首 pipeline 组件
@@ -767,6 +771,7 @@ public final class StreamPlayer {
             self.connectionManager = nextConnMgr
             self.streamInfo = info
             self.audioTimeBase = nextTimeBase
+            self.audioPTSOffset = nil  // 新歌曲重新计算 PTS 偏移
             self.currentURL = info.url
             // 如果有 pendingSeekTime（音质切换），保持当前时间不变
             // 否则是正常切歌，重置为 0
@@ -820,8 +825,7 @@ public final class StreamPlayer {
                 audioRenderer.enqueue(audioBuffer)
 
                 // 精确时间计算：优先使用 packet PTS + stream time_base
-                // 注意：这里报告的是 buffer 开始播放的时间，而非结束时间
-                // 避免 +audioBuffer.duration 导致进度条在播放开始时跳前 1-2 秒
+                // 减去首个 packet 的 PTS 偏移，确保从 0 开始
                 let pts: TimeInterval
                 let nopts = Int64(bitPattern: UInt64(0x8000000000000000)) // AV_NOPTS_VALUE
                 if packetPTS != nopts && packetPTS >= 0 && timeBase.den > 0 {
@@ -832,7 +836,16 @@ public final class StreamPlayer {
                     for i in 0..<index {
                         offset += audioBuffers[i].duration
                     }
-                    pts = basePTS + offset
+                    let rawPTS = basePTS + offset
+                    
+                    // 记录首个 PTS 作为基准偏移（仅在非 seek 状态下）
+                    let ptsOffset: TimeInterval = stateQueue.sync {
+                        if self.audioPTSOffset == nil {
+                            self.audioPTSOffset = rawPTS
+                        }
+                        return self.audioPTSOffset ?? 0
+                    }
+                    pts = rawPTS - ptsOffset
                 } else {
                     // PTS 无效，退回 duration 累加（不太精确但可用）
                     pts = stateQueue.sync { self.currentTime } + audioBuffer.duration
@@ -999,6 +1012,7 @@ public final class StreamPlayer {
             videoDecoder = nil
             demuxer = nil
             audioTimeBase = AVRational(num: 0, den: 1)
+            audioPTSOffset = nil
         }
 
         // Disconnect
