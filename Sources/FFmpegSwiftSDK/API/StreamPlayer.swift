@@ -109,6 +109,16 @@ public final class StreamPlayer {
     /// 元数据读取器。读取音频文件的 ID3 标签、专辑封面等。
     public let metadataReader: MetadataReader
 
+    /// 歌词同步引擎。加载 LRC 歌词后，根据播放时间实时匹配当前行。
+    ///
+    /// ```swift
+    /// player.lyricSyncer.load(lrcContent: lrcString)
+    /// player.lyricSyncer.onSync = { lineIndex, line, wordIndex, progress in
+    ///     // 更新 UI：高亮当前行
+    /// }
+    /// ```
+    public let lyricSyncer: LyricSyncer
+
     /// The video display layer. Add this to your view's layer hierarchy to show video.
     ///
     /// Usage (UIKit):
@@ -223,6 +233,7 @@ public final class StreamPlayer {
         self.spectrumAnalyzer = SpectrumAnalyzer()
         self.waveformGenerator = WaveformGenerator()
         self.metadataReader = MetadataReader()
+        self.lyricSyncer = LyricSyncer()
         self.audioRenderer = AudioRenderer()
         self.videoRenderer = VideoRenderer()
         self.syncController = AVSyncController()
@@ -455,6 +466,8 @@ public final class StreamPlayer {
                 // 记录 seek 目标，抑制 seek 点之前的旧 PTS 更新
                 self.seekTargetTime = seekTime
             }
+            // seek 后重置歌词同步状态
+            lyricSyncer.reset()
         } catch {
             // Seek 失败，静默处理
         }
@@ -965,6 +978,9 @@ public final class StreamPlayer {
                         self.decodedTime = pts
                     }
                 }
+
+                // 更新歌词同步（在 stateQueue 外调用，避免阻塞）
+                lyricSyncer.update(time: pts)
 
                 // A-B 循环检测：到达 B 点时自动 seek 回 A 点（在 stateQueue 外操作 seekLock）
                 let shouldSeekToA: TimeInterval? = stateQueue.sync {

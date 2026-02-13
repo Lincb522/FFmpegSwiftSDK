@@ -30,6 +30,13 @@
 // - ``MetadataReader``        — 读取 ID3 标签、专辑封面、艺术家等元数据。
 // - ``AudioMetadata``         — 元数据结构体。
 //
+// ### 歌词同步
+// - ``LyricSyncer``           — 实时歌词同步引擎，LRC 解析 + 时间对准。
+// - ``LyricParser``           — LRC 格式解析器（标准/增强/多时间标签）。
+// - ``LyricLine``             — 歌词行数据（时间、文字、逐字、翻译）。
+// - ``LyricWord``             — 逐字歌词数据（起止时间 + 文字）。
+// - ``LyricMetadata``         — LRC 文件元信息（标题、艺术家等）。
+//
 // ### Models
 // - ``StreamInfo``            — Metadata about a media stream (codecs, dimensions, duration).
 // - ``VideoFrame``            — Decoded video frame with CVPixelBuffer and timing info.
