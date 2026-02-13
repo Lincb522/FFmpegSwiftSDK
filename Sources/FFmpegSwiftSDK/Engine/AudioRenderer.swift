@@ -60,6 +60,24 @@ final class AudioRenderer {
         return count
     }
 
+    /// 返回缓冲队列中所有 buffer 的总时长（秒），考虑当前 buffer 的已消费偏移
+    var queuedDuration: TimeInterval {
+        lock.lock()
+        var total: TimeInterval = 0
+        for (index, buffer) in bufferQueue.enumerated() {
+            if index == 0 && currentBufferOffset > 0 {
+                // 第一个 buffer 可能已部分消费
+                let totalSamples = buffer.frameCount * buffer.channelCount
+                let remainRatio = Double(totalSamples - currentBufferOffset) / Double(max(totalSamples, 1))
+                total += buffer.duration * remainRatio
+            } else {
+                total += buffer.duration
+            }
+        }
+        lock.unlock()
+        return total
+    }
+
     // MARK: - Initialization
 
     init() {}

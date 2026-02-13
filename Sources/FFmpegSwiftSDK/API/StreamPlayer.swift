@@ -80,7 +80,15 @@ public final class StreamPlayer {
     }
 
     /// The current playback time in seconds.
-    public private(set) var currentTime: TimeInterval = 0
+    /// 实际播放位置 = 解码位置 - 缓冲队列中尚未播放的时长
+    public var currentTime: TimeInterval {
+        let decoded = stateQueue.sync { self.decodedTime }
+        let buffered = audioRenderer.queuedDuration
+        return max(0, decoded - buffered)
+    }
+
+    /// 解码线程更新的已解码时间（入队时间点，非实际播放时间点）
+    private var decodedTime: TimeInterval = 0
 
     /// Metadata about the currently playing stream, or `nil` if not connected.
     public private(set) var streamInfo: StreamInfo?
@@ -220,7 +228,7 @@ public final class StreamPlayer {
         stateQueue.sync {
             self.isPlaybackActive = true
             self.currentURL = url
-            self.currentTime = 0
+            self.decodedTime = 0
             self.streamInfo = nil
         }
 
@@ -352,7 +360,7 @@ public final class StreamPlayer {
         do {
             try demuxer.seek(to: seekTime)
             stateQueue.sync {
-                self.currentTime = seekTime
+                self.decodedTime = seekTime
                 // 记录 seek 目标，抑制 seek 点之前的旧 PTS 更新
                 self.seekTargetTime = seekTime
             }
@@ -776,7 +784,7 @@ public final class StreamPlayer {
             // 如果有 pendingSeekTime（音质切换），保持当前时间不变
             // 否则是正常切歌，重置为 0
             if self.pendingSeekTime == nil {
-                self.currentTime = 0
+                self.decodedTime = 0
             }
         }
 
@@ -854,16 +862,16 @@ public final class StreamPlayer {
                 syncController.updateAudioClock(pts)
 
                 stateQueue.sync {
-                    // seek 后，如果 PTS 还没到目标位置，不更新 currentTime（防止进度条回跳）
+                    // seek 后，如果 PTS 还没到目标位置，不更新 decodedTime（防止进度条回跳）
                     if let target = self.seekTargetTime {
                         if pts >= target {
                             // 已到达或超过 seek 目标，清除标记，恢复正常更新
                             self.seekTargetTime = nil
-                            self.currentTime = pts
+                            self.decodedTime = pts
                         }
-                        // PTS < target：跳过更新，保持 currentTime 在 seek 目标位置
+                        // PTS < target：跳过更新，保持 decodedTime 在 seek 目标位置
                     } else {
-                        self.currentTime = pts
+                        self.decodedTime = pts
                     }
                 }
             }
@@ -1013,6 +1021,7 @@ public final class StreamPlayer {
             demuxer = nil
             audioTimeBase = AVRational(num: 0, den: 1)
             audioPTSOffset = nil
+            decodedTime = 0
         }
 
         // Disconnect
