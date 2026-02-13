@@ -20,7 +20,15 @@
 // - ``EQBandGain``            — Gain setting struct with clamping to [-12, +12] dB.
 //
 // ### Audio Effects
-// - ``AudioEffects``          — 音频效果控制器：音量、变速不变调、响度标准化。
+// - ``AudioEffects``          — 音频效果控制器：音量、变速不变调、变调不变速、响度标准化、淡入淡出。
+//
+// ### 音频可视化
+// - ``SpectrumAnalyzer``      — 实时 FFT 频谱分析器，输出频率幅度数据供 UI 绘制。
+// - ``WaveformGenerator``     — 波形预览生成器，解码整首歌生成波形缩略图数据。
+//
+// ### 元数据
+// - ``MetadataReader``        — 读取 ID3 标签、专辑封面、艺术家等元数据。
+// - ``AudioMetadata``         — 元数据结构体。
 //
 // ### Models
 // - ``StreamInfo``            — Metadata about a media stream (codecs, dimensions, duration).

@@ -152,4 +152,48 @@ public final class AudioEffects {
     public var reverbLevel: Float {
         filterGraph.reverbLevel
     }
+
+    // MARK: - 变调控制
+
+    /// 设置变调（半音数）。变调不变速。
+    ///
+    /// 通过 FFmpeg asetrate + atempo 组合实现。
+    /// 正值升调，负值降调。
+    ///
+    /// - Parameter semitones: 半音数，范围 [-12, +12]。0 = 不变调。
+    ///   典型值：-2（降两个半音）、+3（升三个半音）、+12（升一个八度）
+    public func setPitch(_ semitones: Float) {
+        filterGraph.setPitchSemitones(semitones)
+    }
+
+    /// 当前变调值（半音数）。
+    public var pitchSemitones: Float {
+        filterGraph.pitchSemitones
+    }
+
+    // MARK: - 淡入淡出
+
+    /// 设置淡入效果。歌曲开头音量从 0 渐变到正常。
+    /// - Parameter duration: 淡入时长（秒），0 = 关闭。
+    public func setFadeIn(duration: Float) {
+        filterGraph.setFadeIn(duration: duration)
+    }
+
+    /// 当前淡入时长（秒）。
+    public var fadeInDuration: Float {
+        filterGraph.fadeInDuration
+    }
+
+    /// 设置淡出效果。歌曲结尾音量从正常渐变到 0。
+    /// - Parameters:
+    ///   - duration: 淡出时长（秒），0 = 关闭。
+    ///   - startTime: 淡出开始的时间点（秒）。
+    public func setFadeOut(duration: Float, startTime: Float) {
+        filterGraph.setFadeOut(duration: duration, startTime: startTime)
+    }
+
+    /// 当前淡出时长（秒）。
+    public var fadeOutDuration: Float {
+        filterGraph.fadeOutDuration
+    }
 }

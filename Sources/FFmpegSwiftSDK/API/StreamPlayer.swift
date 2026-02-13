@@ -99,6 +99,16 @@ public final class StreamPlayer {
     /// 音频效果控制器：音量、变速、响度标准化。
     public let audioEffects: AudioEffects
 
+    /// 实时频谱分析器。设置 onSpectrum 回调并启用后，
+    /// 每个 FFT 窗口会回调一次频率幅度数据。
+    public let spectrumAnalyzer: SpectrumAnalyzer
+
+    /// 波形预览生成器。独立于播放 pipeline，可在后台生成波形数据。
+    public let waveformGenerator: WaveformGenerator
+
+    /// 元数据读取器。读取音频文件的 ID3 标签、专辑封面等。
+    public let metadataReader: MetadataReader
+
     /// The video display layer. Add this to your view's layer hierarchy to show video.
     ///
     /// Usage (UIKit):
@@ -174,6 +184,18 @@ public final class StreamPlayer {
     /// 很多音频文件第一个 packet PTS 不是 0（编码器延迟、容器头部偏移等）
     private var audioPTSOffset: TimeInterval? = nil
 
+    // MARK: - A-B 循环
+
+    /// A-B 循环的 A 点（秒），nil = 未设置
+    private var loopPointA: TimeInterval? = nil
+    /// A-B 循环的 B 点（秒），nil = 未设置
+    private var loopPointB: TimeInterval? = nil
+    /// A-B 循环是否启用
+    private var abLoopEnabled: Bool = false
+
+    /// 交叉淡入淡出时长（秒）
+    private var crossfadeDuration: Float = 0.0
+
     // MARK: - Gapless Playback (预加载下一首)
 
     /// 预加载的下一首 pipeline 组件
@@ -198,11 +220,15 @@ public final class StreamPlayer {
         self.audioFilterGraph = AudioFilterGraph()
         self.equalizer = AudioEqualizer(filter: eqFilter)
         self.audioEffects = AudioEffects(filterGraph: audioFilterGraph)
+        self.spectrumAnalyzer = SpectrumAnalyzer()
+        self.waveformGenerator = WaveformGenerator()
+        self.metadataReader = MetadataReader()
         self.audioRenderer = AudioRenderer()
         self.videoRenderer = VideoRenderer()
         self.syncController = AVSyncController()
         self.audioRenderer.setEQFilter(eqFilter)
         self.audioRenderer.setAudioFilterGraph(audioFilterGraph)
+        self.audioRenderer.setSpectrumAnalyzer(spectrumAnalyzer)
     }
 
     deinit {
@@ -279,6 +305,71 @@ public final class StreamPlayer {
         seekLock.lock()
         pendingSeekTime = time
         seekLock.unlock()
+    }
+
+    // MARK: - A-B 循环
+
+    /// 设置 A-B 循环区间。设置后自动启用循环。
+    ///
+    /// 播放到 B 点时自动 seek 回 A 点，实现精确区间循环。
+    /// 适用于练歌、学习乐器等场景。
+    ///
+    /// - Parameters:
+    ///   - pointA: A 点时间（秒）
+    ///   - pointB: B 点时间（秒），必须大于 A 点
+    public func setABLoop(pointA: TimeInterval, pointB: TimeInterval) {
+        guard pointB > pointA else { return }
+        stateQueue.sync {
+            self.loopPointA = pointA
+            self.loopPointB = pointB
+            self.abLoopEnabled = true
+        }
+    }
+
+    /// 清除 A-B 循环，恢复正常播放。
+    public func clearABLoop() {
+        stateQueue.sync {
+            self.loopPointA = nil
+            self.loopPointB = nil
+            self.abLoopEnabled = false
+        }
+    }
+
+    /// A-B 循环是否启用。
+    public var isABLoopEnabled: Bool {
+        stateQueue.sync { abLoopEnabled }
+    }
+
+    /// 当前 A-B 循环的 A 点（秒），nil = 未设置。
+    public var abLoopPointA: TimeInterval? {
+        stateQueue.sync { loopPointA }
+    }
+
+    /// 当前 A-B 循环的 B 点（秒），nil = 未设置。
+    public var abLoopPointB: TimeInterval? {
+        stateQueue.sync { loopPointB }
+    }
+
+    // MARK: - 交叉淡入淡出
+
+    /// 设置交叉淡入淡出时长。
+    ///
+    /// 当使用 prepareNext + 无缝切歌时，当前歌曲结尾会淡出，
+    /// 下一首歌曲开头会淡入，两者重叠产生 DJ 混音效果。
+    ///
+    /// - Parameter duration: 交叉淡入淡出时长（秒），0 = 关闭。
+    ///   典型值：3~8 秒。
+    public func setCrossfadeDuration(_ duration: Float) {
+        audioEffects.setFadeIn(duration: duration)
+        // 淡出需要知道歌曲总时长，在 startPipeline 中动态设置
+        stateQueue.sync {
+            self.crossfadeDuration = duration
+        }
+    }
+
+    /// 当前交叉淡入淡出时长（秒）。
+    public var currentCrossfadeDuration: Float {
+        stateQueue.sync { crossfadeDuration }
     }
 
     /// 预加载下一首歌曲，实现无缝切歌（gapless playback）。
@@ -873,6 +964,22 @@ public final class StreamPlayer {
                     } else {
                         self.decodedTime = pts
                     }
+                }
+
+                // A-B 循环检测：到达 B 点时自动 seek 回 A 点（在 stateQueue 外操作 seekLock）
+                let shouldSeekToA: TimeInterval? = stateQueue.sync {
+                    if self.abLoopEnabled,
+                       let a = self.loopPointA,
+                       let b = self.loopPointB,
+                       pts >= b {
+                        return a
+                    }
+                    return nil
+                }
+                if let a = shouldSeekToA {
+                    seekLock.lock()
+                    pendingSeekTime = a
+                    seekLock.unlock()
                 }
             }
 

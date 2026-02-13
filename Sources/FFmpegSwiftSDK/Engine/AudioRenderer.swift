@@ -34,6 +34,9 @@ final class AudioRenderer {
     /// Optional FFmpeg avfilter 音频滤镜图（loudnorm、atempo、volume）
     private var audioFilterGraph: AudioFilterGraph?
 
+    /// Optional 频谱分析器
+    private var spectrumAnalyzer: SpectrumAnalyzer?
+
     /// Sample rate of the current audio stream (needed by EQ).
     private var sampleRate: Int = 44100
 
@@ -96,6 +99,11 @@ final class AudioRenderer {
     /// Sets the FFmpeg avfilter 音频滤镜图。
     func setAudioFilterGraph(_ graph: AudioFilterGraph?) {
         audioFilterGraph = graph
+    }
+
+    /// Sets the spectrum analyzer for real-time FFT analysis.
+    func setSpectrumAnalyzer(_ analyzer: SpectrumAnalyzer?) {
+        spectrumAnalyzer = analyzer
     }
 
     /// Starts the audio renderer with the given audio format.
@@ -355,6 +363,11 @@ final class AudioRenderer {
             // Free the processed buffer's allocation
             processed.data.deallocate()
             // Do NOT deallocate buf.data — it points to the output buffer we don't own
+        }
+
+        // 输入频谱分析器（在所有音效处理之后）
+        if let analyzer = spectrumAnalyzer, analyzer.isEnabled, samplesWritten > 0 {
+            analyzer.feed(samples: output, frameCount: frameCount, channelCount: channelCount)
         }
     }
 }

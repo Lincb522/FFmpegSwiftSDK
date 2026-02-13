@@ -38,6 +38,19 @@ final class AudioFilterGraph {
     /// 混响强度（0~1），通过 FFmpeg aecho 滤镜实现
     private(set) var reverbLevel: Float = 0.0
 
+    /// 变调（半音数），通过 rubberband 或 asetrate+atempo 实现
+    /// 正值升调，负值降调。范围 [-12, +12]。
+    private(set) var pitchSemitones: Float = 0.0
+
+    /// 淡入时长（秒），0 = 不淡入
+    private(set) var fadeInDuration: Float = 0.0
+    /// 淡出时长（秒），0 = 不淡出
+    private(set) var fadeOutDuration: Float = 0.0
+    /// 淡出起始位置（秒），仅在 fadeOutDuration > 0 时有效
+    private(set) var fadeOutStartTime: Float = 0.0
+    /// 已处理的采样数（用于计算淡入淡出位置）
+    private var processedSamples: Int64 = 0
+
     /// 当前音频格式
     private var sampleRate: Int = 0
     private var channelCount: Int = 0
@@ -53,7 +66,7 @@ final class AudioFilterGraph {
     /// 是否有任何滤镜处于激活状态
     var isActive: Bool {
         lock.lock()
-        let active = volumeDB != 0.0 || tempo != 1.0 || loudnormEnabled || bassGain != 0.0 || trebleGain != 0.0 || surroundLevel > 0.0 || reverbLevel > 0.0
+        let active = volumeDB != 0.0 || tempo != 1.0 || loudnormEnabled || bassGain != 0.0 || trebleGain != 0.0 || surroundLevel > 0.0 || reverbLevel > 0.0 || pitchSemitones != 0.0 || fadeInDuration > 0.0 || fadeOutDuration > 0.0
         lock.unlock()
         return active
     }
@@ -160,6 +173,51 @@ final class AudioFilterGraph {
         lock.unlock()
     }
 
+    /// 设置变调（半音数）。变调不变速。
+    /// 内部通过 asetrate 改变采样率 + atempo 补偿速度实现。
+    /// - Parameter semitones: 半音数，范围 [-12, +12]。0 = 不变调。
+    func setPitchSemitones(_ semitones: Float) {
+        let clamped = min(max(semitones, -12), 12)
+        lock.lock()
+        if pitchSemitones != clamped {
+            pitchSemitones = clamped
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置淡入效果。
+    /// - Parameter duration: 淡入时长（秒），0 = 关闭。
+    func setFadeIn(duration: Float) {
+        lock.lock()
+        if fadeInDuration != duration {
+            fadeInDuration = max(duration, 0)
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置淡出效果。
+    /// - Parameters:
+    ///   - duration: 淡出时长（秒），0 = 关闭。
+    ///   - startTime: 淡出开始的时间点（秒）。
+    func setFadeOut(duration: Float, startTime: Float) {
+        lock.lock()
+        if fadeOutDuration != duration || fadeOutStartTime != startTime {
+            fadeOutDuration = max(duration, 0)
+            fadeOutStartTime = max(startTime, 0)
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 重置已处理采样计数（seek 或切歌时调用）
+    func resetProcessedSamples() {
+        lock.lock()
+        processedSamples = 0
+        lock.unlock()
+    }
+
     /// 重置所有滤镜到默认值。
     func reset() {
         lock.lock()
@@ -173,6 +231,11 @@ final class AudioFilterGraph {
         trebleGain = 0.0
         surroundLevel = 0.0
         reverbLevel = 0.0
+        pitchSemitones = 0.0
+        fadeInDuration = 0.0
+        fadeOutDuration = 0.0
+        fadeOutStartTime = 0.0
+        processedSamples = 0
         needsRebuild = true
         lock.unlock()
         destroyGraph()
@@ -184,12 +247,15 @@ final class AudioFilterGraph {
     /// 如果没有激活的滤镜，直接返回原 buffer（零拷贝）。
     func process(_ buffer: AudioBuffer) -> AudioBuffer {
         lock.lock()
-        let active = volumeDB != 0.0 || tempo != 1.0 || loudnormEnabled || bassGain != 0.0 || trebleGain != 0.0 || surroundLevel > 0.0 || reverbLevel > 0.0
+        let active = volumeDB != 0.0 || tempo != 1.0 || loudnormEnabled || bassGain != 0.0 || trebleGain != 0.0 || surroundLevel > 0.0 || reverbLevel > 0.0 || pitchSemitones != 0.0 || fadeInDuration > 0.0 || fadeOutDuration > 0.0
         lock.unlock()
 
         guard active else { return buffer }
 
         lock.lock()
+
+        // 更新已处理采样数（用于淡入淡出位置计算）
+        processedSamples += Int64(buffer.frameCount)
 
         // 格式变化或参数变化时重建滤镜图
         if needsRebuild || sampleRate != buffer.sampleRate || channelCount != buffer.channelCount {
@@ -371,8 +437,28 @@ final class AudioFilterGraph {
         }
 
         // atempo 滤镜（级联支持 > 2.0x）
-        if tempo != 1.0 {
-            var remaining = tempo
+        // 变调不变速：通过 asetrate 改变采样率（改变音高），再用 atempo 补偿速度
+        // 最终效果：音高改变但播放速度不变
+        let effectiveTempo: Float
+        if pitchSemitones != 0.0 {
+            // 半音 → 频率比：ratio = 2^(semitones/12)
+            let pitchRatio = powf(2.0, pitchSemitones / 12.0)
+            let newRate = Int(Float(sampleRate) * pitchRatio)
+            // asetrate 改变采样率（改变音高）
+            if let ctx = createFilter(graph: graph, name: "asetrate", label: "pitch",
+                                       args: "r=\(newRate)") {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+            // 需要用 atempo 补偿速度变化：补偿因子 = 1/pitchRatio
+            // 如果用户同时设置了 tempo，合并计算
+            effectiveTempo = tempo / pitchRatio
+        } else {
+            effectiveTempo = tempo
+        }
+
+        if effectiveTempo != 1.0 {
+            var remaining = effectiveTempo
             var atempoIndex = 0
             while remaining != 1.0 {
                 let factor: Float
@@ -399,6 +485,27 @@ final class AudioFilterGraph {
         if loudnormEnabled {
             let args = "I=\(String(format: "%.1f", loudnormTarget)):LRA=\(String(format: "%.1f", loudnormLRA)):TP=\(String(format: "%.1f", loudnormTP))"
             if let ctx = createFilter(graph: graph, name: "loudnorm", label: "loudnorm", args: args) {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // afade 淡入滤镜
+        if fadeInDuration > 0.0 {
+            let samples = Int(fadeInDuration * Float(sampleRate))
+            if let ctx = createFilter(graph: graph, name: "afade", label: "fadein",
+                                       args: "type=in:start_sample=0:nb_samples=\(samples)") {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // afade 淡出滤镜
+        if fadeOutDuration > 0.0 {
+            let startSample = Int(fadeOutStartTime * Float(sampleRate))
+            let nbSamples = Int(fadeOutDuration * Float(sampleRate))
+            if let ctx = createFilter(graph: graph, name: "afade", label: "fadeout",
+                                       args: "type=out:start_sample=\(startSample):nb_samples=\(nbSamples)") {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
