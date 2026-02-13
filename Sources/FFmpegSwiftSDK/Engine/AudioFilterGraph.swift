@@ -29,6 +29,15 @@ final class AudioFilterGraph {
     private(set) var loudnormLRA: Float = 11.0      // LRA
     private(set) var loudnormTP: Float = -1.0       // True Peak
 
+    /// 低音增益（dB），通过 FFmpeg bass 滤镜实现
+    private(set) var bassGain: Float = 0.0
+    /// 高音增益（dB），通过 FFmpeg treble 滤镜实现
+    private(set) var trebleGain: Float = 0.0
+    /// 环绕强度（0~1），通过 FFmpeg extrastereo 滤镜实现
+    private(set) var surroundLevel: Float = 0.0
+    /// 混响强度（0~1），通过 FFmpeg aecho 滤镜实现
+    private(set) var reverbLevel: Float = 0.0
+
     /// 当前音频格式
     private var sampleRate: Int = 0
     private var channelCount: Int = 0
@@ -44,7 +53,7 @@ final class AudioFilterGraph {
     /// 是否有任何滤镜处于激活状态
     var isActive: Bool {
         lock.lock()
-        let active = volumeDB != 0.0 || tempo != 1.0 || loudnormEnabled
+        let active = volumeDB != 0.0 || tempo != 1.0 || loudnormEnabled || bassGain != 0.0 || trebleGain != 0.0 || surroundLevel > 0.0 || reverbLevel > 0.0
         lock.unlock()
         return active
     }
@@ -101,6 +110,56 @@ final class AudioFilterGraph {
         lock.unlock()
     }
 
+    /// 设置低音增益（dB）。通过 FFmpeg bass 滤镜实现。
+    /// - Parameter db: 增益值，范围 [-12, +12]。0 = 不变。
+    func setBassGain(_ db: Float) {
+        let clamped = min(max(db, -12), 12)
+        lock.lock()
+        if bassGain != clamped {
+            bassGain = clamped
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置高音增益（dB）。通过 FFmpeg treble 滤镜实现。
+    /// - Parameter db: 增益值，范围 [-12, +12]。0 = 不变。
+    func setTrebleGain(_ db: Float) {
+        let clamped = min(max(db, -12), 12)
+        lock.lock()
+        if trebleGain != clamped {
+            trebleGain = clamped
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置环绕强度。通过 FFmpeg extrastereo 滤镜实现。
+    /// - Parameter level: 强度 0~1。0 = 关闭，1 = 最大环绕。
+    ///   内部映射到 extrastereo 的 m 参数（1.0~4.0）。
+    func setSurroundLevel(_ level: Float) {
+        let clamped = min(max(level, 0), 1)
+        lock.lock()
+        if surroundLevel != clamped {
+            surroundLevel = clamped
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置混响强度。通过 FFmpeg aecho 滤镜实现。
+    /// - Parameter level: 强度 0~1。0 = 关闭，1 = 最大混响。
+    ///   内部映射 aecho 的 decay 参数（0.1~0.6）。
+    func setReverbLevel(_ level: Float) {
+        let clamped = min(max(level, 0), 1)
+        lock.lock()
+        if reverbLevel != clamped {
+            reverbLevel = clamped
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
     /// 重置所有滤镜到默认值。
     func reset() {
         lock.lock()
@@ -110,6 +169,10 @@ final class AudioFilterGraph {
         loudnormTarget = -14.0
         loudnormLRA = 11.0
         loudnormTP = -1.0
+        bassGain = 0.0
+        trebleGain = 0.0
+        surroundLevel = 0.0
+        reverbLevel = 0.0
         needsRebuild = true
         lock.unlock()
         destroyGraph()
@@ -121,7 +184,7 @@ final class AudioFilterGraph {
     /// 如果没有激活的滤镜，直接返回原 buffer（零拷贝）。
     func process(_ buffer: AudioBuffer) -> AudioBuffer {
         lock.lock()
-        let active = volumeDB != 0.0 || tempo != 1.0 || loudnormEnabled
+        let active = volumeDB != 0.0 || tempo != 1.0 || loudnormEnabled || bassGain != 0.0 || trebleGain != 0.0 || surroundLevel > 0.0 || reverbLevel > 0.0
         lock.unlock()
 
         guard active else { return buffer }
@@ -261,6 +324,47 @@ final class AudioFilterGraph {
         if volumeDB != 0.0 {
             if let ctx = createFilter(graph: graph, name: "volume", label: "vol",
                                        args: "volume=\(String(format: "%.1f", volumeDB))dB") {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // bass 滤镜（低音增强/衰减，中心频率 100Hz）
+        if bassGain != 0.0 {
+            if let ctx = createFilter(graph: graph, name: "bass", label: "bass",
+                                       args: "gain=\(String(format: "%.1f", bassGain)):frequency=100:width_type=o:width=0.5") {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // treble 滤镜（高音增强/衰减，中心频率 3000Hz）
+        if trebleGain != 0.0 {
+            if let ctx = createFilter(graph: graph, name: "treble", label: "treble",
+                                       args: "gain=\(String(format: "%.1f", trebleGain)):frequency=3000:width_type=o:width=0.5") {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // extrastereo 滤镜（环绕/立体声增强）
+        // m=1.0 为原始，m>1 增强立体声分离度，最大 4.0
+        if surroundLevel > 0.0 {
+            let m = 1.0 + surroundLevel * 3.0 // 映射 0~1 → 1.0~4.0
+            if let ctx = createFilter(graph: graph, name: "extrastereo", label: "surround",
+                                       args: "m=\(String(format: "%.2f", m))") {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // aecho 滤镜（混响效果）
+        // 使用多次短延迟模拟房间混响
+        // in_gain=0.8, out_gain=0.9, delays=60|120, decays=动态
+        if reverbLevel > 0.0 {
+            let decay = 0.1 + reverbLevel * 0.5 // 映射 0~1 → 0.1~0.6
+            let args = "in_gain=0.8:out_gain=0.9:delays=60|120:decays=\(String(format: "%.2f", decay))|\(String(format: "%.2f", decay * 0.7))"
+            if let ctx = createFilter(graph: graph, name: "aecho", label: "reverb", args: args) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }

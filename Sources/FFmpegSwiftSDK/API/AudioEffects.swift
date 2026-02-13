@@ -91,7 +91,7 @@ public final class AudioEffects {
 
     // MARK: - 重置
 
-    /// 重置所有音频效果到默认值（音量 0dB、原速、关闭响度标准化）。
+    /// 重置所有音频效果到默认值（音量 0dB、原速、关闭响度标准化、低音/高音/环绕归零）。
     public func reset() {
         filterGraph.reset()
     }
@@ -99,5 +99,57 @@ public final class AudioEffects {
     /// 是否有任何效果处于激活状态。
     public var isActive: Bool {
         filterGraph.isActive
+    }
+
+    // MARK: - 低音控制
+
+    /// 设置低音增益（dB）。通过 FFmpeg bass 搁架滤镜实现。
+    /// - Parameter db: 增益值，范围 [-12, +12]。0 = 不变。
+    public func setBassGain(_ db: Float) {
+        filterGraph.setBassGain(db)
+    }
+
+    /// 当前低音增益（dB）。
+    public var bassGain: Float {
+        filterGraph.bassGain
+    }
+
+    // MARK: - 高音控制
+
+    /// 设置高音增益（dB）。通过 FFmpeg treble 搁架滤镜实现。
+    /// - Parameter db: 增益值，范围 [-12, +12]。0 = 不变。
+    public func setTrebleGain(_ db: Float) {
+        filterGraph.setTrebleGain(db)
+    }
+
+    /// 当前高音增益（dB）。
+    public var trebleGain: Float {
+        filterGraph.trebleGain
+    }
+
+    // MARK: - 环绕控制
+
+    /// 设置环绕强度。通过 FFmpeg extrastereo 滤镜增强立体声分离度。
+    /// - Parameter level: 强度 0~1。0 = 关闭，1 = 最大环绕。
+    public func setSurroundLevel(_ level: Float) {
+        filterGraph.setSurroundLevel(level)
+    }
+
+    /// 当前环绕强度（0~1）。
+    public var surroundLevel: Float {
+        filterGraph.surroundLevel
+    }
+
+    // MARK: - 混响控制
+
+    /// 设置混响强度。通过 FFmpeg aecho 滤镜模拟房间混响。
+    /// - Parameter level: 强度 0~1。0 = 关闭，1 = 最大混响。
+    public func setReverbLevel(_ level: Float) {
+        filterGraph.setReverbLevel(level)
+    }
+
+    /// 当前混响强度（0~1）。
+    public var reverbLevel: Float {
+        filterGraph.reverbLevel
     }
 }
