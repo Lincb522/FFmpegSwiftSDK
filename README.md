@@ -1,4 +1,5 @@
 <p align="center">
+  <img src="assets/logo.svg" width="180" alt="FFmpegSwiftSDK Logo" />
   <h1 align="center">FFmpegSwiftSDK</h1>
   <p align="center">
     基于 FFmpeg 8.0 的 iOS 流媒体播放 Swift SDK<br/>
