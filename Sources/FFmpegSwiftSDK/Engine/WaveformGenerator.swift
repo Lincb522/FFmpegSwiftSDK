@@ -1,8 +1,9 @@
 // WaveformGenerator.swift
 // FFmpegSwiftSDK
 //
-// 波形预览生成器。解码整首歌曲，提取峰值数据，
+// 波形预览生成器。解码音频，提取峰值数据，
 // 生成类似 SoundCloud 的波形缩略图数据。
+// 支持本地文件和流媒体 URL。
 
 import Foundation
 import CFFmpeg
@@ -20,13 +21,14 @@ public typealias WaveformProgressCallback = (_ progress: Float) -> Void
 
 /// 波形预览生成器。
 ///
-/// 独立于播放 pipeline，在后台解码整首歌曲并提取波形数据。
+/// 独立于播放 pipeline，在后台解码音频并提取波形数据。
 /// 返回指定数量的采样点，可直接用于绘制波形图。
+/// 支持本地文件和流媒体 URL（HTTP、RTMP 等）。
 ///
 /// ```swift
 /// let generator = WaveformGenerator()
 /// let waveform = try await generator.generate(
-///     url: "file:///path/to/song.flac",
+///     url: "https://example.com/stream.mp3",
 ///     samplesCount: 200
 /// )
 /// // waveform: [WaveformSample]，长度 = 200
@@ -37,23 +39,31 @@ public final class WaveformGenerator {
 
     /// 生成波形数据。
     ///
-    /// 在后台线程解码整首歌曲，按时间均匀采样，提取每个区间的峰值。
+    /// 在后台线程解码音频，按时间均匀采样，提取每个区间的峰值。
+    /// 对于流媒体，会采集 maxDuration 时长的数据。
     ///
     /// - Parameters:
-    ///   - url: 音频文件 URL
+    ///   - url: 音频文件或流媒体 URL
     ///   - samplesCount: 输出采样点数量，默认 200
+    ///   - maxDuration: 最大采集时长（秒），对于流媒体默认 60 秒
     ///   - onProgress: 进度回调（可选）
     /// - Returns: 波形采样数组
     /// - Throws: FFmpegError
     public func generate(
         url: String,
         samplesCount: Int = 200,
+        maxDuration: TimeInterval = 60,
         onProgress: WaveformProgressCallback? = nil
     ) async throws -> [WaveformSample] {
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    let result = try self.generateSync(url: url, samplesCount: samplesCount, onProgress: onProgress)
+                    let result = try self.generateSync(
+                        url: url,
+                        samplesCount: samplesCount,
+                        maxDuration: maxDuration,
+                        onProgress: onProgress
+                    )
                     continuation.resume(returning: result)
                 } catch {
                     continuation.resume(throwing: error)
@@ -66,16 +76,40 @@ public final class WaveformGenerator {
     private func generateSync(
         url: String,
         samplesCount: Int,
+        maxDuration: TimeInterval,
         onProgress: WaveformProgressCallback?
     ) throws -> [WaveformSample] {
-        // 打开文件
+        // 检测是否为流媒体 URL
+        let isStreamURL = url.lowercased().hasPrefix("http://") ||
+                          url.lowercased().hasPrefix("https://") ||
+                          url.lowercased().hasPrefix("rtmp://") ||
+                          url.lowercased().hasPrefix("rtsp://") ||
+                          url.lowercased().hasPrefix("mms://")
+        
+        // 设置网络选项
+        var options: OpaquePointer?
+        if isStreamURL {
+            av_dict_set(&options, "timeout", "10000000", 0)  // 10 秒超时
+            av_dict_set(&options, "reconnect", "1", 0)
+            av_dict_set(&options, "reconnect_streamed", "1", 0)
+            av_dict_set(&options, "reconnect_delay_max", "5", 0)
+        }
+        defer { av_dict_free(&options) }
+        
+        // 打开文件/流
         var fmtCtx: UnsafeMutablePointer<AVFormatContext>?
-        var ret = avformat_open_input(&fmtCtx, url, nil, nil)
+        var ret = avformat_open_input(&fmtCtx, url, nil, &options)
         guard ret >= 0, let ctx = fmtCtx else {
-            throw FFmpegError.connectionFailed(code: ret, message: "无法打开文件: \(url)")
+            throw FFmpegError.connectionFailed(code: ret, message: "无法打开: \(url)")
         }
         defer { avformat_close_input(&fmtCtx) }
 
+        // 对于流媒体，设置更长的探测时间
+        if isStreamURL {
+            ctx.pointee.probesize = 5 * 1024 * 1024
+            ctx.pointee.max_analyze_duration = 10 * AV_TIME_BASE
+        }
+        
         ret = avformat_find_stream_info(ctx, nil)
         guard ret >= 0 else {
             throw FFmpegError.from(code: ret)
@@ -94,7 +128,7 @@ public final class WaveformGenerator {
         guard audioIdx >= 0,
               let stream = ctx.pointee.streams[Int(audioIdx)],
               let codecpar = stream.pointee.codecpar else {
-            throw FFmpegError.unsupportedFormat(codecName: "no audio stream")
+            throw FFmpegError.unsupportedFormat(codecName: "未找到音频流")
         }
 
         // 打开解码器
@@ -131,9 +165,19 @@ public final class WaveformGenerator {
         defer { var s: OpaquePointer? = swr; swr_free(&s) }
         swr_init(swr)
 
-        // 计算总时长和每个采样区间的大小
+        // 计算目标时长和采样数
         let duration = Double(ctx.pointee.duration) / Double(AV_TIME_BASE)
-        let totalSamples = Int(duration * Double(codecCtx.pointee.sample_rate))
+        let isLiveStream = duration <= 0 || duration > 86400
+        
+        let targetDuration: TimeInterval
+        if isLiveStream {
+            targetDuration = maxDuration
+        } else {
+            targetDuration = maxDuration > 0 ? min(maxDuration, duration) : duration
+        }
+        
+        let sampleRate = Int(codecCtx.pointee.sample_rate)
+        let totalSamples = Int(targetDuration * Double(sampleRate))
         let samplesPerBin = max(totalSamples / samplesCount, 1)
 
         // 解码并提取峰值
@@ -155,7 +199,24 @@ public final class WaveformGenerator {
         let outBuf = UnsafeMutablePointer<Float>.allocate(capacity: outBufSize)
         defer { outBuf.deallocate() }
 
-        while av_read_frame(ctx, packet) >= 0 {
+        var readErrors = 0
+        let maxReadErrors = 10
+
+        while true {
+            ret = av_read_frame(ctx, packet)
+            
+            if ret < 0 {
+                if ret == AVERROR_EOF || ret == -Int32(EAGAIN) {
+                    break
+                }
+                readErrors += 1
+                if readErrors >= maxReadErrors {
+                    break
+                }
+                continue
+            }
+            readErrors = 0
+            
             defer { av_packet_unref(packet) }
             guard packet.pointee.stream_index == audioIdx else { continue }
 
@@ -184,6 +245,15 @@ public final class WaveformGenerator {
                     let progress = Float(currentSample) / Float(totalSamples)
                     onProgress(min(progress, 1.0))
                 }
+                
+                // 检查是否达到目标采样数
+                if currentSample >= totalSamples {
+                    break
+                }
+            }
+            
+            if currentSample >= totalSamples {
+                break
             }
         }
 

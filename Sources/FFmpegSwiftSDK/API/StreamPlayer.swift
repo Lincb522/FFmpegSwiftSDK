@@ -240,6 +240,8 @@ public final class StreamPlayer {
         self.audioRenderer.setEQFilter(eqFilter)
         self.audioRenderer.setAudioFilterGraph(audioFilterGraph)
         self.audioRenderer.setSpectrumAnalyzer(spectrumAnalyzer)
+        // 设置 equalizer 的 audioEffects 引用，用于应用预设的环绕效果
+        self.equalizer.audioEffects = self.audioEffects
     }
 
     deinit {

@@ -124,25 +124,56 @@ public final class AudioFingerprint {
         return Fingerprint(hashes: hashes, duration: duration, sampleRate: sampleRate)
     }
     
-    /// 从音频文件生成指纹
+    /// 从音频文件或流媒体生成指纹
     /// - Parameters:
-    ///   - url: 音频文件 URL
-    ///   - duration: 采样时长（秒），nil = 整首歌
+    ///   - url: 音频文件或流媒体 URL
+    ///   - duration: 采样时长（秒），nil = 整首歌（流媒体默认 30 秒）
     /// - Returns: 音频指纹
     public static func generate(from url: URL, duration: TimeInterval? = nil) throws -> Fingerprint {
         // 直接解码音频文件获取采样数据
-        let (samples, sampleRate) = try decodeAudioFile(url: url, maxDuration: duration)
+        let (samples, sampleRate) = try decodeAudioFile(url: url.absoluteString, maxDuration: duration)
         return generate(samples: samples, sampleRate: sampleRate)
     }
     
-    /// 解码音频文件获取采样数据
-    private static func decodeAudioFile(url: URL, maxDuration: TimeInterval?) throws -> (samples: [Float], sampleRate: Int) {
+    /// 从 URL 字符串生成指纹（支持流媒体）
+    /// - Parameters:
+    ///   - urlString: 音频文件或流媒体 URL 字符串
+    ///   - duration: 采样时长（秒），nil = 整首歌（流媒体默认 30 秒）
+    /// - Returns: 音频指纹
+    public static func generate(from urlString: String, duration: TimeInterval? = nil) throws -> Fingerprint {
+        let (samples, sampleRate) = try decodeAudioFile(url: urlString, maxDuration: duration)
+        return generate(samples: samples, sampleRate: sampleRate)
+    }
+    
+    /// 解码音频文件获取采样数据（支持流媒体）
+    private static func decodeAudioFile(url: String, maxDuration: TimeInterval?) throws -> (samples: [Float], sampleRate: Int) {
+        // 检测是否为流媒体 URL
+        let isStreamURL = url.lowercased().hasPrefix("http://") ||
+                          url.lowercased().hasPrefix("https://") ||
+                          url.lowercased().hasPrefix("rtmp://") ||
+                          url.lowercased().hasPrefix("rtsp://") ||
+                          url.lowercased().hasPrefix("mms://")
+        
+        // 设置网络选项
+        var options: OpaquePointer?
+        if isStreamURL {
+            av_dict_set(&options, "timeout", "10000000", 0)
+            av_dict_set(&options, "reconnect", "1", 0)
+            av_dict_set(&options, "reconnect_streamed", "1", 0)
+        }
+        defer { av_dict_free(&options) }
+        
         var fmtCtx: UnsafeMutablePointer<AVFormatContext>?
-        var ret = avformat_open_input(&fmtCtx, url.path, nil, nil)
+        var ret = avformat_open_input(&fmtCtx, url, nil, &options)
         guard ret >= 0, let ctx = fmtCtx else {
-            throw FFmpegError.connectionFailed(code: ret, message: "无法打开文件: \(url.path)")
+            throw FFmpegError.connectionFailed(code: ret, message: "无法打开: \(url)")
         }
         defer { avformat_close_input(&fmtCtx) }
+        
+        if isStreamURL {
+            ctx.pointee.probesize = 5 * 1024 * 1024
+            ctx.pointee.max_analyze_duration = 10 * AV_TIME_BASE
+        }
         
         ret = avformat_find_stream_info(ctx, nil)
         guard ret >= 0 else {
@@ -162,7 +193,7 @@ public final class AudioFingerprint {
         guard audioIdx >= 0,
               let stream = ctx.pointee.streams[Int(audioIdx)],
               let codecpar = stream.pointee.codecpar else {
-            throw FFmpegError.unsupportedFormat(codecName: "no audio stream")
+            throw FFmpegError.unsupportedFormat(codecName: "未找到音频流")
         }
         
         let sampleRate = Int(codecpar.pointee.sample_rate)
@@ -201,15 +232,23 @@ public final class AudioFingerprint {
         defer { var s: OpaquePointer? = swr; swr_free(&s) }
         swr_init(swr)
         
-        // 计算最大采样数
-        let maxSamples: Int?
+        // 计算目标采样数
+        let duration = Double(ctx.pointee.duration) / Double(AV_TIME_BASE)
+        let isLiveStream = duration <= 0 || duration > 86400
+        
+        let targetDuration: TimeInterval
         if let dur = maxDuration {
-            maxSamples = Int(dur * Double(sampleRate))
+            targetDuration = dur
+        } else if isLiveStream {
+            targetDuration = 30.0  // 流媒体默认 30 秒
         } else {
-            maxSamples = nil
+            targetDuration = duration
         }
         
+        let maxSamples = Int(targetDuration * Double(sampleRate))
+        
         var allSamples: [Float] = []
+        allSamples.reserveCapacity(min(maxSamples, sampleRate * 120))
         
         guard let packet = av_packet_alloc() else {
             throw FFmpegError.resourceAllocationFailed(resource: "AVPacket")
@@ -226,7 +265,24 @@ public final class AudioFingerprint {
         let outBuf = UnsafeMutablePointer<Float>.allocate(capacity: outBufSize)
         defer { outBuf.deallocate() }
         
-        decodeLoop: while av_read_frame(ctx, packet) >= 0 {
+        var readErrors = 0
+        let maxReadErrors = 10
+        
+        decodeLoop: while true {
+            ret = av_read_frame(ctx, packet)
+            
+            if ret < 0 {
+                if ret == AVERROR_EOF || ret == -Int32(EAGAIN) {
+                    break
+                }
+                readErrors += 1
+                if readErrors >= maxReadErrors {
+                    break
+                }
+                continue
+            }
+            readErrors = 0
+            
             defer { av_packet_unref(packet) }
             guard packet.pointee.stream_index == audioIdx else { continue }
             
@@ -248,7 +304,7 @@ public final class AudioFingerprint {
                     allSamples.append(outBuf[i])
                     
                     // 检查是否达到最大采样数
-                    if let max = maxSamples, allSamples.count >= max {
+                    if allSamples.count >= maxSamples {
                         break decodeLoop
                     }
                 }

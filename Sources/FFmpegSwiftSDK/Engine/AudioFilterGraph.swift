@@ -160,6 +160,15 @@ final class AudioFilterGraph {
     private var bufferSrcCtx: UnsafeMutablePointer<AVFilterContext>?
     private var bufferSinkCtx: UnsafeMutablePointer<AVFilterContext>?
     private var needsRebuild: Bool = true
+    
+    // 用于平滑过渡的交叉淡化缓冲
+    private var crossfadeBuffer: [Float] = []
+    private var crossfadeSamplesRemaining: Int = 0
+    private let crossfadeDuration: Int = 256  // 交叉淡化采样数（约 5ms @ 48kHz）
+    
+    // 上一帧的最后几个采样，用于检测不连续
+    private var lastOutputSamples: [Float] = []
+    private let smoothingSamples: Int = 64  // 平滑采样数
 
     /// 是否有任何滤镜处于激活状态
     var isActive: Bool {
@@ -748,19 +757,43 @@ final class AudioFilterGraph {
 
     /// 处理一个音频 buffer，返回滤镜处理后的结果。
     /// 如果没有激活的滤镜，直接返回原 buffer（零拷贝）。
+    /// 
+    /// 修复音频电流声问题：
+    /// 1. 滤镜图重建时先 flush 旧图中的剩余帧
+    /// 2. 使用交叉淡化平滑过渡
+    /// 3. 检测并修复音频不连续
     func process(_ buffer: AudioBuffer) -> AudioBuffer {
         lock.lock()
         let active = checkAnyFilterActive()
         lock.unlock()
 
-        guard active else { return buffer }
+        guard active else { 
+            // 清空交叉淡化状态
+            lock.lock()
+            crossfadeBuffer.removeAll()
+            crossfadeSamplesRemaining = 0
+            lastOutputSamples.removeAll()
+            lock.unlock()
+            return buffer 
+        }
 
         lock.lock()
 
         processedSamples += Int64(buffer.frameCount)
 
         // 格式变化或参数变化时重建滤镜图
-        if needsRebuild || sampleRate != buffer.sampleRate || channelCount != buffer.channelCount {
+        let needsGraphRebuild = needsRebuild || sampleRate != buffer.sampleRate || channelCount != buffer.channelCount
+        
+        if needsGraphRebuild {
+            // 保存旧图的最后输出用于交叉淡化
+            if filterGraph != nil && !lastOutputSamples.isEmpty {
+                crossfadeBuffer = lastOutputSamples
+                crossfadeSamplesRemaining = crossfadeDuration
+            }
+            
+            // Flush 旧滤镜图中的剩余帧（避免丢失数据）
+            flushFilterGraphUnsafe()
+            
             sampleRate = buffer.sampleRate
             channelCount = buffer.channelCount
             rebuildGraph()
@@ -814,11 +847,11 @@ final class AudioFilterGraph {
         }
 
         let getResult = av_buffersink_get_frame(sinkCtx, outFrame)
-        lock.unlock()
 
         guard getResult >= 0 else {
             var ofp: UnsafeMutablePointer<AVFrame>? = outFrame
             av_frame_free(&ofp)
+            lock.unlock()
             return buffer
         }
 
@@ -836,12 +869,108 @@ final class AudioFilterGraph {
         var ofp2: UnsafeMutablePointer<AVFrame>? = outFrame
         av_frame_free(&ofp2)
 
+        // 应用交叉淡化平滑过渡（修复滤镜图重建时的电流声）
+        if crossfadeSamplesRemaining > 0 && !crossfadeBuffer.isEmpty {
+            applyCrossfadeUnsafe(outData, frameCount: outFrameCount, channelCount: outChannels)
+        }
+        
+        // 应用平滑处理（修复音频不连续导致的爆音）
+        applySmoothingUnsafe(outData, frameCount: outFrameCount, channelCount: outChannels)
+        
+        // 保存最后几个采样用于下次平滑
+        saveLastSamplesUnsafe(outData, frameCount: outFrameCount, channelCount: outChannels)
+        
+        lock.unlock()
+
         return AudioBuffer(
             data: outData,
             frameCount: outFrameCount,
             channelCount: outChannels,
             sampleRate: outRate
         )
+    }
+    
+    /// Flush 滤镜图中的剩余帧（在 lock 内调用）
+    private func flushFilterGraphUnsafe() {
+        guard let srcCtx = bufferSrcCtx, let sinkCtx = bufferSinkCtx else { return }
+        
+        // 发送 EOF 信号给滤镜图
+        av_buffersrc_add_frame(srcCtx, nil)
+        
+        // 取出所有剩余帧（丢弃，但这样可以清空滤镜内部缓冲）
+        let flushFrame = av_frame_alloc()
+        if let frame = flushFrame {
+            while av_buffersink_get_frame(sinkCtx, frame) >= 0 {
+                av_frame_unref(frame)
+            }
+            var fp: UnsafeMutablePointer<AVFrame>? = frame
+            av_frame_free(&fp)
+        }
+    }
+    
+    /// 应用交叉淡化（在 lock 内调用）
+    private func applyCrossfadeUnsafe(_ data: UnsafeMutablePointer<Float>, frameCount: Int, channelCount: Int) {
+        let samplesToFade = min(crossfadeSamplesRemaining, frameCount)
+        let fadeBufferChannels = crossfadeBuffer.count / smoothingSamples
+        
+        guard fadeBufferChannels == channelCount else {
+            crossfadeBuffer.removeAll()
+            crossfadeSamplesRemaining = 0
+            return
+        }
+        
+        for i in 0..<samplesToFade {
+            let fadeProgress = Float(crossfadeDuration - crossfadeSamplesRemaining + i) / Float(crossfadeDuration)
+            let newWeight = fadeProgress
+            let oldWeight = 1.0 - fadeProgress
+            
+            for ch in 0..<channelCount {
+                let idx = i * channelCount + ch
+                let oldIdx = min(i, smoothingSamples - 1) * channelCount + ch
+                
+                if oldIdx < crossfadeBuffer.count {
+                    data[idx] = data[idx] * newWeight + crossfadeBuffer[oldIdx] * oldWeight
+                }
+            }
+        }
+        
+        crossfadeSamplesRemaining -= samplesToFade
+        if crossfadeSamplesRemaining <= 0 {
+            crossfadeBuffer.removeAll()
+        }
+    }
+    
+    /// 应用平滑处理，修复帧边界不连续（在 lock 内调用）
+    private func applySmoothingUnsafe(_ data: UnsafeMutablePointer<Float>, frameCount: Int, channelCount: Int) {
+        guard !lastOutputSamples.isEmpty, lastOutputSamples.count == channelCount else { return }
+        
+        // 检测第一个采样与上一帧最后采样的差异
+        var maxDiff: Float = 0
+        for ch in 0..<channelCount {
+            let diff = abs(data[ch] - lastOutputSamples[ch])
+            maxDiff = max(maxDiff, diff)
+        }
+        
+        // 如果差异过大（可能产生爆音），应用短时平滑
+        let threshold: Float = 0.3  // 约 -10dB 的跳变
+        if maxDiff > threshold {
+            let smoothSamples = min(32, frameCount)
+            for i in 0..<smoothSamples {
+                let weight = Float(i) / Float(smoothSamples)
+                for ch in 0..<channelCount {
+                    let idx = i * channelCount + ch
+                    data[idx] = data[idx] * weight + lastOutputSamples[ch] * (1.0 - weight)
+                }
+            }
+        }
+    }
+    
+    /// 保存最后几个采样（在 lock 内调用）
+    private func saveLastSamplesUnsafe(_ data: UnsafeMutablePointer<Float>, frameCount: Int, channelCount: Int) {
+        let samplesToSave = min(smoothingSamples, frameCount)
+        let startIdx = (frameCount - samplesToSave) * channelCount
+        
+        lastOutputSamples = Array(UnsafeBufferPointer(start: data + startIdx, count: samplesToSave * channelCount))
     }
 
     // MARK: - 滤镜图构建
@@ -1031,20 +1160,26 @@ final class AudioFilterGraph {
             }
         }
 
-        // 环绕增强
+        // 环绕增强（使用 stereotools 替代 extrastereo，更平滑）
         if surroundLevel > 0.0 && channelCount == 2 {
-            let m = 1.0 + surroundLevel * 3.0
-            if let ctx = createFilter(graph: graph, name: "extrastereo", label: "surround",
-                                       args: "m=\(String(format: "%.2f", m))") {
+            // stereotools 的 sbal 参数控制立体声宽度，范围 -1 到 1
+            // 0 = 原始，正值增加分离度
+            let sbal = surroundLevel * 0.5  // 最大 0.5，避免失真
+            let args = "mode=lr>lr:sbal=\(String(format: "%.2f", sbal))"
+            if let ctx = createFilter(graph: graph, name: "stereotools", label: "surround", args: args) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
         }
 
-        // 混响
+        // 混响（使用更平滑的参数，减少电流声）
         if reverbLevel > 0.0 {
-            let decay = 0.1 + reverbLevel * 0.5
-            let args = "in_gain=0.8:out_gain=0.9:delays=60|120:decays=\(String(format: "%.2f", decay))|\(String(format: "%.2f", decay * 0.7))"
+            // 使用更长的延迟和更低的增益，避免金属感
+            let decay = 0.15 + reverbLevel * 0.35  // 更保守的衰减
+            let wetGain = 0.3 + reverbLevel * 0.4  // 湿信号增益
+            let dryGain = 1.0 - reverbLevel * 0.3  // 干信号保留更多
+            // 使用多个延迟点创建更自然的混响
+            let args = "in_gain=\(String(format: "%.2f", dryGain)):out_gain=\(String(format: "%.2f", wetGain)):delays=40|80|120|160:decays=\(String(format: "%.2f", decay))|\(String(format: "%.2f", decay * 0.8))|\(String(format: "%.2f", decay * 0.6))|\(String(format: "%.2f", decay * 0.4))"
             if let ctx = createFilter(graph: graph, name: "aecho", label: "reverb", args: args) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
@@ -1062,85 +1197,99 @@ final class AudioFilterGraph {
 
         // ==================== 特殊效果 ====================
         
-        // 合唱
+        // 合唱（使用更平滑的参数）
         if chorusEnabled {
-            let depth = 0.3 + chorusDepth * 0.7
-            if let ctx = createFilter(graph: graph, name: "chorus", label: "chorus",
-                                       args: "in_gain=0.5:out_gain=0.9:delays=50|60|40:decays=\(String(format: "%.2f", depth))|\(String(format: "%.2f", depth * 0.8))|\(String(format: "%.2f", depth * 0.6)):speeds=0.25|0.4|0.3:depths=2|2.3|1.3") {
+            // 降低深度和速度，使用更保守的参数避免电流声
+            let depth = 0.2 + chorusDepth * 0.4  // 更保守的深度
+            let args = "in_gain=0.6:out_gain=0.8:delays=25|35|45:decays=\(String(format: "%.2f", depth))|\(String(format: "%.2f", depth * 0.85))|\(String(format: "%.2f", depth * 0.7)):speeds=0.2|0.25|0.3:depths=1.5|1.8|1.2"
+            if let ctx = createFilter(graph: graph, name: "chorus", label: "chorus", args: args) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
         }
 
-        // 镶边
+        // 镶边（使用更平滑的参数）
         if flangerEnabled {
-            let depth = 2 + flangerDepth * 8
-            if let ctx = createFilter(graph: graph, name: "flanger", label: "flanger",
-                                       args: "delay=0:depth=\(String(format: "%.1f", depth)):regen=0:width=71:speed=0.5:shape=sinusoidal:phase=25:interp=linear") {
+            // 降低深度和 regen，使用更平滑的插值
+            let depth = 1.5 + flangerDepth * 4.0  // 更保守的深度
+            let args = "delay=1:depth=\(String(format: "%.1f", depth)):regen=0:width=50:speed=0.3:shape=sinusoidal:phase=50:interp=quadratic"
+            if let ctx = createFilter(graph: graph, name: "flanger", label: "flanger", args: args) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
         }
 
-        // 颤音
+        // 颤音（优化参数，减少电流声）
         if tremoloEnabled {
-            if let ctx = createFilter(graph: graph, name: "tremolo", label: "tremolo",
-                                       args: "f=\(String(format: "%.1f", tremoloFrequency)):d=\(String(format: "%.2f", tremoloDepth))") {
+            // 使用更平滑的深度参数
+            let smoothDepth = tremoloDepth * 0.7  // 降低最大深度
+            let args = "f=\(String(format: "%.1f", tremoloFrequency)):d=\(String(format: "%.2f", smoothDepth))"
+            if let ctx = createFilter(graph: graph, name: "tremolo", label: "tremolo", args: args) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
         }
 
-        // 颤抖
+        // 颤抖（优化参数）
         if vibratoEnabled {
-            if let ctx = createFilter(graph: graph, name: "vibrato", label: "vibrato",
-                                       args: "f=\(String(format: "%.1f", vibratoFrequency)):d=\(String(format: "%.2f", vibratoDepth))") {
+            // 使用更保守的深度
+            let smoothDepth = vibratoDepth * 0.6
+            let args = "f=\(String(format: "%.1f", vibratoFrequency)):d=\(String(format: "%.2f", smoothDepth))"
+            if let ctx = createFilter(graph: graph, name: "vibrato", label: "vibrato", args: args) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
         }
 
-        // 失真（Lo-Fi）
+        // 失真（Lo-Fi，优化参数减少刺耳感）
         if crusherEnabled {
-            if let ctx = createFilter(graph: graph, name: "acrusher", label: "crusher",
-                                       args: "bits=\(String(format: "%.0f", crusherBits)):samples=\(String(format: "%.0f", crusherSamples)):mix=1") {
+            // 使用更高的位深和更低的采样降低因子
+            let smoothBits = max(crusherBits, 6.0)  // 最低 6 位，避免太刺耳
+            let smoothSamples = min(crusherSamples, 8.0)  // 最高 8x 降采样
+            let args = "bits=\(String(format: "%.0f", smoothBits)):samples=\(String(format: "%.0f", smoothSamples)):mix=0.8"
+            if let ctx = createFilter(graph: graph, name: "acrusher", label: "crusher", args: args) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
         }
 
-        // 电话效果（300-3400Hz 带通）
+        // 电话效果（300-3400Hz 带通，优化参数）
         if telephoneEnabled {
-            if let ctx = createFilter(graph: graph, name: "bandpass", label: "telephone",
-                                       args: "frequency=1850:width_type=h:width=3100") {
+            // 使用更平滑的滤波器
+            let args = "frequency=1850:width_type=h:width=2800:poles=2"
+            if let ctx = createFilter(graph: graph, name: "bandpass", label: "telephone", args: args) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
         }
 
-        // 水下效果（低通 + 混响）
+        // 水下效果（低通 + 混响，使用更平滑的参数）
         if underwaterEnabled {
+            // 使用更高的截止频率和更平滑的混响
             if let ctx = createFilter(graph: graph, name: "lowpass", label: "underwater_lp",
-                                       args: "frequency=500") {
+                                       args: "frequency=600:poles=2") {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
+            // 更自然的水下回声
             if let ctx = createFilter(graph: graph, name: "aecho", label: "underwater_echo",
-                                       args: "in_gain=0.6:out_gain=0.8:delays=100|200:decays=0.4|0.3") {
+                                       args: "in_gain=0.7:out_gain=0.7:delays=60|120|180:decays=0.35|0.25|0.15") {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
         }
 
-        // 收音机效果（带通 + 失真）
+        // 收音机效果（带通 + 轻微失真，优化参数）
         if radioEnabled {
-            if let ctx = createFilter(graph: graph, name: "bandpass", label: "radio_bp",
-                                       args: "frequency=2000:width_type=h:width=3000") {
+            // 使用更自然的带通
+            let args1 = "frequency=1800:width_type=h:width=2500:poles=2"
+            if let ctx = createFilter(graph: graph, name: "bandpass", label: "radio_bp", args: args1) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
-            if let ctx = createFilter(graph: graph, name: "acrusher", label: "radio_crush",
-                                       args: "bits=12:samples=2:mix=0.5") {
+            // 更轻微的失真
+            let args2 = "bits=10:samples=2:mix=0.4"
+            if let ctx = createFilter(graph: graph, name: "acrusher", label: "radio_crush", args: args2) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }

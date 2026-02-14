@@ -3,6 +3,7 @@
 //
 // 读取音频文件的元数据（ID3 标签、Vorbis Comment 等）。
 // 提取标题、艺术家、专辑、年份、专辑封面等信息。
+// 支持本地文件和流媒体 URL。
 
 import Foundation
 import CFFmpeg
@@ -31,35 +32,57 @@ public struct AudioMetadata {
     public let artworkMimeType: String?
     /// 所有原始标签键值对
     public let rawTags: [String: String]
+    /// 流媒体标题（ICY 元数据）
+    public let streamTitle: String?
+    /// 流媒体名称
+    public let streamName: String?
+    /// 流媒体 URL
+    public let streamURL: String?
 }
 
 /// 音频元数据读取器。
 ///
 /// 使用 FFmpeg 的 AVFormatContext 读取各种格式的元数据标签，
 /// 支持 ID3v1/v2（MP3）、Vorbis Comment（FLAC/OGG）、
-/// iTunes Metadata（M4A/AAC）等。
+/// iTunes Metadata（M4A/AAC）、ICY 元数据（网络流）等。
 ///
 /// ```swift
 /// let reader = MetadataReader()
-/// let metadata = try reader.read(url: "file:///path/to/song.flac")
-/// print(metadata.title)   // 歌曲标题
-/// print(metadata.artist)  // 艺术家
-/// // metadata.artworkData  // 专辑封面 Data（可直接转 UIImage）
+/// let metadata = try reader.read(url: "https://stream.example.com/radio.mp3")
+/// print(metadata.title)       // 歌曲标题
+/// print(metadata.streamTitle) // 流媒体当前播放的歌曲
 /// ```
 public final class MetadataReader {
 
     public init() {}
 
-    /// 读取音频文件的元数据。
+    /// 读取音频文件或流媒体的元数据。
     ///
-    /// - Parameter url: 文件路径或 URL
+    /// - Parameter url: 文件路径或流媒体 URL
     /// - Returns: AudioMetadata
     /// - Throws: FFmpegError
     public func read(url: String) throws -> AudioMetadata {
+        // 检测是否为流媒体 URL
+        let isStreamURL = url.lowercased().hasPrefix("http://") ||
+                          url.lowercased().hasPrefix("https://") ||
+                          url.lowercased().hasPrefix("rtmp://") ||
+                          url.lowercased().hasPrefix("rtsp://") ||
+                          url.lowercased().hasPrefix("mms://") ||
+                          url.lowercased().hasPrefix("icy://")
+        
+        // 设置网络选项
+        var options: OpaquePointer?
+        if isStreamURL {
+            av_dict_set(&options, "timeout", "5000000", 0)  // 5 秒超时
+            av_dict_set(&options, "icy", "1", 0)  // 启用 ICY 元数据
+            av_dict_set(&options, "reconnect", "1", 0)
+        }
+        defer { av_dict_free(&options) }
+        
         var fmtCtx: UnsafeMutablePointer<AVFormatContext>?
-        let ret = avformat_open_input(&fmtCtx, url, nil, nil)
+        let ret = avformat_open_input(&fmtCtx, url, nil, &options)
         guard ret >= 0, let ctx = fmtCtx else {
-            throw FFmpegError.connectionFailed(code: ret, message: "无法打开文件: \(url)")
+            throw FFmpegError.connectionFailed(code: ret, message: "无法打开: \(url)")
         }
         defer { avformat_close_input(&fmtCtx) }
 
@@ -109,9 +132,14 @@ public final class MetadataReader {
                 break
             }
         }
+        
+        // 提取流媒体特有的元数据
+        let streamTitle = rawTags["icy-title"] ?? rawTags["StreamTitle"]
+        let streamName = rawTags["icy-name"] ?? rawTags["icy_name"]
+        let streamURL = rawTags["icy-url"] ?? rawTags["icy_url"]
 
         return AudioMetadata(
-            title: rawTags["title"] ?? rawTags["TITLE"],
+            title: rawTags["title"] ?? rawTags["TITLE"] ?? streamTitle,
             artist: rawTags["artist"] ?? rawTags["ARTIST"],
             album: rawTags["album"] ?? rawTags["ALBUM"],
             albumArtist: rawTags["album_artist"] ?? rawTags["ALBUMARTIST"],
@@ -121,8 +149,25 @@ public final class MetadataReader {
             composer: rawTags["composer"] ?? rawTags["COMPOSER"],
             artworkData: artworkData,
             artworkMimeType: artworkMimeType,
-            rawTags: rawTags
+            rawTags: rawTags,
+            streamTitle: streamTitle,
+            streamName: streamName,
+            streamURL: streamURL
         )
+    }
+    
+    /// 异步读取元数据（适用于流媒体）
+    public func readAsync(url: String) async throws -> AudioMetadata {
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try self.read(url: url)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     /// 从 AVDictionary 提取所有键值对。

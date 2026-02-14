@@ -99,19 +99,66 @@ final class PlayerViewModel: ObservableObject {
     }
     @Published var hasLyrics: Bool = false
 
+    // MARK: - EQ 预设
+
+    @Published var selectedPreset: EQPreset? = nil
+    @Published var presetsByCategory: [(category: String, presets: [EQPreset])] = EQPresets.byCategory
+
     // MARK: - 音频分析
 
     @Published var isAnalyzing: Bool = false
+    @Published var analysisProgress: Float = 0
     @Published var analysisResult: AnalysisResult?
 
     struct AnalysisResult {
+        // BPM
         let bpm: Float
-        let peakDB: Float
+        let bpmConfidence: Float
+        let bpmStability: Float
+        
+        // 响度
         let loudnessLUFS: Float
+        let shortTermLUFS: Float
+        let loudnessRange: Float
+        
+        // 动态
         let dynamicRange: Float
+        let drValue: Int
+        let peakDB: Float
+        let rmsDB: Float
+        let crestFactor: Float
+        let compressionDesc: String
+        
+        // 频率
         let spectralCentroid: Float
+        let dominantFreq: Float
+        let lowEnergyRatio: Float
+        let midEnergyRatio: Float
+        let highEnergyRatio: Float
+        
+        // 音色
+        let brightness: Float
+        let warmth: Float
+        let timbreDesc: String
+        let eqSuggestion: String
+        
+        // 音调
+        let pitchNote: String
+        let pitchFreq: Float
+        
+        // 质量
+        let qualityScore: Int
+        let qualityGrade: String
         let hasClipping: Bool
+        let issues: [String]
+        
+        // 相位（立体声）
+        let phaseCorrelation: Float
+        let stereoWidth: Float
         let phaseDescription: String
+        
+        // 节拍数
+        let beatCount: Int
     }
 
     // MARK: - 歌曲识别
@@ -219,6 +266,36 @@ final class PlayerViewModel: ObservableObject {
         player.equalizer.reset()
         for band in EQBand.allCases { eqGains[band] = 0.0 }
         clampMessage = nil
+        selectedPreset = nil
+    }
+
+    // MARK: - EQ 预设
+
+    func applyPreset(_ preset: EQPreset) {
+        player.equalizer.applyPreset(preset)
+        // 更新 UI 状态
+        for band in EQBand.allCases {
+            eqGains[band] = preset.gains[band] ?? 0.0
+        }
+        selectedPreset = preset
+        // 同步效果参数到 UI
+        if preset.surroundLevel > 0 {
+            surroundLevel = preset.surroundLevel
+        }
+        if preset.stereoWidth != 1.0 {
+            stereoWidth = preset.stereoWidth
+        }
+        if preset.bassBoost != 0 {
+            bassGain = preset.bassBoost
+        }
+        if preset.trebleBoost != 0 {
+            trebleGain = preset.trebleBoost
+        }
+    }
+
+    func clearPreset() {
+        resetEQ()
+        resetEffects()
     }
 
     // MARK: - 音频效果
@@ -428,53 +505,87 @@ final class PlayerViewModel: ObservableObject {
     // MARK: - 音频分析
 
     func runAnalysis() {
-        guard !waveformSamples.isEmpty else {
-            // 需要先有波形数据
+        guard !urlText.isEmpty else {
             return
         }
 
         isAnalyzing = true
+        analysisProgress = 0
         analysisResult = nil
+        
+        let url = urlText
 
-        Task.detached { [weak self] in
-            guard let self else { return }
-
-            // 从波形数据生成采样（简化版，实际应从原始音频获取）
-            let samples = self.waveformSamples.flatMap { [$0.positive, $0.negative] }
-            let sampleRate = 44100
-
-            // BPM 检测
-            let bpmResult = AudioAnalyzer.detectBPM(samples: samples, sampleRate: sampleRate)
-
-            // 峰值检测
-            let peakResult = AudioAnalyzer.detectPeak(samples: samples, sampleRate: sampleRate)
-
-            // 响度测量
-            let loudnessResult = AudioAnalyzer.measureLoudness(samples: samples, sampleRate: sampleRate, channelCount: 1)
-
-            // 动态范围
-            let dynamicResult = AudioAnalyzer.analyzeDynamicRange(samples: samples, sampleRate: sampleRate)
-
-            // 频率分析
-            let freqResult = AudioAnalyzer.analyzeFrequency(samples: samples, sampleRate: sampleRate)
-
-            // 削波检测
-            let clippingResult = AudioAnalyzer.detectClipping(samples: samples, sampleRate: sampleRate)
-
-            // 相位检测（需要立体声数据，这里简化处理）
-            let phaseDesc = "单声道数据"
-
-            await MainActor.run {
-                self.analysisResult = AnalysisResult(
-                    bpm: bpmResult.bpm,
-                    peakDB: peakResult.peakDB,
-                    loudnessLUFS: loudnessResult.integratedLUFS,
-                    dynamicRange: dynamicResult.dynamicRange,
-                    spectralCentroid: freqResult.spectralCentroid,
-                    hasClipping: clippingResult.hasSevereClipping,
-                    phaseDescription: phaseDesc
+        Task {
+            do {
+                // 使用真正的音频解码分析（支持本地文件和流媒体）
+                let result = try await AudioAnalyzer.analyzeFile(
+                    url: url,
+                    maxDuration: 30,  // 分析前 30 秒
+                    onProgress: { [weak self] progress in
+                        Task { @MainActor in
+                            self?.analysisProgress = progress
+                        }
+                    }
                 )
-                self.isAnalyzing = false
+                
+                await MainActor.run {
+                    self.analysisResult = AnalysisResult(
+                        // BPM
+                        bpm: result.bpm.bpm,
+                        bpmConfidence: result.bpm.confidence,
+                        bpmStability: result.bpm.stability,
+                        
+                        // 响度
+                        loudnessLUFS: result.loudness.integratedLUFS,
+                        shortTermLUFS: result.loudness.shortTermLUFS,
+                        loudnessRange: result.loudness.loudnessRange,
+                        
+                        // 动态
+                        dynamicRange: result.dynamicRange.dynamicRange,
+                        drValue: result.dynamicRange.drValue,
+                        peakDB: result.dynamicRange.peakLevel,
+                        rmsDB: result.dynamicRange.rmsLevel,
+                        crestFactor: result.dynamicRange.crestFactor,
+                        compressionDesc: result.dynamicRange.compressionDescription,
+                        
+                        // 频率
+                        spectralCentroid: result.frequency.spectralCentroid,
+                        dominantFreq: result.frequency.dominantFrequency,
+                        lowEnergyRatio: result.frequency.lowEnergyRatio,
+                        midEnergyRatio: result.frequency.midEnergyRatio,
+                        highEnergyRatio: result.frequency.highEnergyRatio,
+                        
+                        // 音色
+                        brightness: result.timbre.brightness,
+                        warmth: result.timbre.warmth,
+                        timbreDesc: result.timbre.description,
+                        eqSuggestion: result.timbre.eqSuggestion,
+                        
+                        // 音调
+                        pitchNote: result.pitch.noteName,
+                        pitchFreq: result.pitch.fundamentalFrequency,
+                        
+                        // 质量
+                        qualityScore: result.clipping.hasSevereClipping ? 60 : 85,
+                        qualityGrade: result.clipping.hasSevereClipping ? "一般" : "良好",
+                        hasClipping: result.clipping.hasSevereClipping,
+                        issues: result.clipping.hasSevereClipping ? ["检测到削波"] : [],
+                        
+                        // 相位
+                        phaseCorrelation: result.phase?.correlation ?? 0,
+                        stereoWidth: result.phase?.stereoWidth ?? 0,
+                        phaseDescription: result.phase?.description ?? "单声道",
+                        
+                        // 节拍
+                        beatCount: result.beatPositions.count
+                    )
+                    self.isAnalyzing = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.isAnalyzing = false
+                    self.errorMessage = "分析失败: \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -490,7 +601,7 @@ final class PlayerViewModel: ObservableObject {
         let title = metaTitle ?? "未知歌曲"
         let artist = metaArtist ?? "未知艺术家"
 
-        // 从波形生成简化采样
+        // 从波形生成简化采样（在主线程获取数据）
         let samples = waveformSamples.flatMap { [$0.positive, $0.negative] }
         let fingerprint = AudioFingerprint.generate(samples: samples, sampleRate: 44100)
 
@@ -520,13 +631,15 @@ final class PlayerViewModel: ObservableObject {
         isRecognizing = true
         recognitionResult = nil
         recognitionMessage = nil
+        
+        // 在主线程获取数据
+        let samples = waveformSamples.flatMap { [$0.positive, $0.negative] }
+        let db = fingerprintDB
 
         Task.detached { [weak self] in
             guard let self else { return }
 
-            let samples = self.waveformSamples.flatMap { [$0.positive, $0.negative] }
-
-            if let result = self.fingerprintDB.recognize(samples: samples, sampleRate: 44100) {
+            if let result = db.recognize(samples: samples, sampleRate: 44100) {
                 await MainActor.run {
                     self.recognitionResult = RecognitionResult(
                         title: result.title,

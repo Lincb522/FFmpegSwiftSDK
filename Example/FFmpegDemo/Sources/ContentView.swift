@@ -315,6 +315,10 @@ struct ContentView: View {
                     Button("重置") { vm.resetEQ() }
                         .font(.system(size: 11)).foregroundStyle(accent)
                 }
+                
+                // EQ 预设选择器
+                eqPresetSelector
+                
                 HStack(alignment: .center, spacing: 0) {
                     ForEach(EQBand.allCases, id: \.rawValue) { band in
                         eqColumn(band: band)
@@ -323,6 +327,98 @@ struct ContentView: View {
                 .padding(.vertical, 4)
             }
         }
+    }
+    
+    // MARK: - EQ 预设选择器
+    
+    private var eqPresetSelector: some View {
+        VStack(spacing: 8) {
+            // 当前预设显示
+            HStack {
+                Text("预设")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.5))
+                Spacer()
+                Text(vm.selectedPreset?.name ?? "自定义")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(vm.selectedPreset != nil ? accent : .white.opacity(0.6))
+            }
+            
+            // 预设分类滚动选择
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(vm.presetsByCategory, id: \.category) { category in
+                        Menu {
+                            ForEach(category.presets) { preset in
+                                Button {
+                                    vm.applyPreset(preset)
+                                } label: {
+                                    HStack {
+                                        Text(preset.name)
+                                        if vm.selectedPreset?.id == preset.id {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(category.category)
+                                    .font(.system(size: 10, weight: .medium))
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 8))
+                            }
+                            .foregroundStyle(categoryContainsSelected(category) ? .white : .white.opacity(0.6))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(categoryContainsSelected(category) ? accent.opacity(0.3) : Color.white.opacity(0.06))
+                            .clipShape(Capsule())
+                        }
+                    }
+                }
+            }
+            
+            // 预设描述
+            if let preset = vm.selectedPreset {
+                Text(preset.description)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                // 显示预设包含的效果
+                if preset.surroundLevel > 0 || preset.stereoWidth != 1.0 || preset.bassBoost != 0 || preset.trebleBoost != 0 {
+                    HStack(spacing: 8) {
+                        if preset.surroundLevel > 0 {
+                            presetEffectTag("环绕 \(Int(preset.surroundLevel * 100))%")
+                        }
+                        if preset.stereoWidth != 1.0 {
+                            presetEffectTag("宽度 \(String(format: "%.1f", preset.stereoWidth))")
+                        }
+                        if preset.bassBoost != 0 {
+                            presetEffectTag("低音 \(preset.bassBoost > 0 ? "+" : "")\(Int(preset.bassBoost))dB")
+                        }
+                        if preset.trebleBoost != 0 {
+                            presetEffectTag("高音 \(preset.trebleBoost > 0 ? "+" : "")\(Int(preset.trebleBoost))dB")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private func categoryContainsSelected(_ category: (category: String, presets: [EQPreset])) -> Bool {
+        guard let selected = vm.selectedPreset else { return false }
+        return category.presets.contains { $0.id == selected.id }
+    }
+    
+    private func presetEffectTag(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 9))
+            .foregroundStyle(accent)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(accent.opacity(0.15))
+            .clipShape(Capsule())
     }
 
     private func eqColumn(band: EQBand) -> some View {
@@ -596,17 +692,147 @@ struct ContentView: View {
                 }
 
                 if vm.isAnalyzing {
-                    ProgressView()
-                        .tint(accent)
-                } else if let result = vm.analysisResult {
-                    VStack(alignment: .leading, spacing: 8) {
-                        analysisRow("BPM", "\(String(format: "%.1f", result.bpm))")
-                        analysisRow("峰值", "\(String(format: "%.1f", result.peakDB)) dBFS")
-                        analysisRow("响度", "\(String(format: "%.1f", result.loudnessLUFS)) LUFS")
-                        analysisRow("动态范围", "\(String(format: "%.1f", result.dynamicRange)) dB")
-                        analysisRow("频谱质心", "\(String(format: "%.0f", result.spectralCentroid)) Hz")
-                        analysisRow("削波", result.hasClipping ? "⚠️ 检测到" : "✓ 无")
-                        analysisRow("相位", result.phaseDescription)
+                    VStack(spacing: 8) {
+                        ProgressView(value: vm.analysisProgress)
+                            .tint(accent)
+                            .frame(height: 4)
+                        Text("正在分析... \(Int(vm.analysisProgress * 100))%")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                    .frame(minHeight: 100)
+                } else if let r = vm.analysisResult {
+                    VStack(alignment: .leading, spacing: 16) {
+                        // 质量评分
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("质量评分")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.white.opacity(0.5))
+                                Text("\(r.qualityScore)")
+                                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                                    .foregroundStyle(qualityColor(r.qualityScore))
+                            }
+                            Spacer()
+                            Text(r.qualityGrade)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(qualityColor(r.qualityScore))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(qualityColor(r.qualityScore).opacity(0.2))
+                                .clipShape(Capsule())
+                        }
+                        
+                        Divider().background(Color.white.opacity(0.1))
+                        
+                        // BPM 和节拍
+                        analysisSection("节奏") {
+                            analysisRow("BPM", "\(String(format: "%.1f", r.bpm))")
+                            analysisRow("置信度", "\(String(format: "%.0f", r.bpmConfidence * 100))%")
+                            analysisRow("稳定性", "\(String(format: "%.0f", r.bpmStability * 100))%")
+                            analysisRow("节拍数", "\(r.beatCount)")
+                        }
+                        
+                        // 响度
+                        analysisSection("响度") {
+                            analysisRow("积分响度", "\(String(format: "%.1f", r.loudnessLUFS)) LUFS")
+                            analysisRow("短期响度", "\(String(format: "%.1f", r.shortTermLUFS)) LUFS")
+                            analysisRow("响度范围", "\(String(format: "%.1f", r.loudnessRange)) LU")
+                        }
+                        
+                        // 动态
+                        analysisSection("动态") {
+                            analysisRow("DR 值", "DR\(r.drValue)")
+                            analysisRow("峰值", "\(String(format: "%.1f", r.peakDB)) dBFS")
+                            analysisRow("RMS", "\(String(format: "%.1f", r.rmsDB)) dBFS")
+                            analysisRow("波峰因数", "\(String(format: "%.1f", r.crestFactor)) dB")
+                            analysisRow("削波", r.hasClipping ? "⚠️ 检测到" : "✓ 无")
+                        }
+                        
+                        // 压缩评价
+                        Text(r.compressionDesc)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.6))
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.white.opacity(0.05))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        
+                        // 频率
+                        analysisSection("频率") {
+                            analysisRow("主频率", "\(String(format: "%.0f", r.dominantFreq)) Hz")
+                            analysisRow("频谱质心", "\(String(format: "%.0f", r.spectralCentroid)) Hz")
+                            analysisRow("低频", "\(String(format: "%.0f", r.lowEnergyRatio * 100))%")
+                            analysisRow("中频", "\(String(format: "%.0f", r.midEnergyRatio * 100))%")
+                            analysisRow("高频", "\(String(format: "%.0f", r.highEnergyRatio * 100))%")
+                        }
+                        
+                        // 频段能量条
+                        HStack(spacing: 4) {
+                            energyBar("低", r.lowEnergyRatio, .blue)
+                            energyBar("中", r.midEnergyRatio, .green)
+                            energyBar("高", r.highEnergyRatio, .orange)
+                        }
+                        .frame(height: 40)
+                        
+                        // 音色
+                        analysisSection("音色") {
+                            analysisRow("亮度", "\(String(format: "%.0f", r.brightness * 100))%")
+                            analysisRow("温暖度", "\(String(format: "%.0f", r.warmth * 100))%")
+                            analysisRow("描述", r.timbreDesc)
+                        }
+                        
+                        // EQ 建议
+                        if !r.eqSuggestion.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("EQ 建议")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.5))
+                                Text(r.eqSuggestion)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(accent)
+                            }
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(accent.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                        
+                        // 音调
+                        analysisSection("音调") {
+                            analysisRow("音符", r.pitchNote)
+                            analysisRow("基频", "\(String(format: "%.1f", r.pitchFreq)) Hz")
+                        }
+                        
+                        // 相位（立体声）
+                        analysisSection("立体声") {
+                            analysisRow("相位相关", "\(String(format: "%.2f", r.phaseCorrelation))")
+                            analysisRow("立体声宽度", "\(String(format: "%.0f", r.stereoWidth * 100))%")
+                            analysisRow("状态", r.phaseDescription)
+                        }
+                        
+                        // 问题列表
+                        if !r.issues.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("检测到的问题")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.orange)
+                                ForEach(r.issues, id: \.self) { issue in
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.orange)
+                                        Text(issue)
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                }
+                            }
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.orange.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
                     }
                 } else {
                     Text("点击「分析」按钮开始分析当前音频")
@@ -615,6 +841,15 @@ struct ContentView: View {
                         .frame(minHeight: 60)
                 }
             }
+        }
+    }
+    
+    private func analysisSection(_ title: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.7))
+            content()
         }
     }
 
@@ -628,6 +863,29 @@ struct ContentView: View {
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .foregroundStyle(accent)
         }
+    }
+    
+    private func energyBar(_ label: String, _ value: Float, _ color: Color) -> some View {
+        VStack(spacing: 2) {
+            GeometryReader { geo in
+                VStack {
+                    Spacer()
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(color.opacity(0.8))
+                        .frame(height: geo.size.height * CGFloat(min(value * 2, 1)))
+                }
+            }
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundStyle(.white.opacity(0.5))
+        }
+    }
+    
+    private func qualityColor(_ score: Int) -> Color {
+        if score >= 80 { return .green }
+        if score >= 60 { return .yellow }
+        if score >= 40 { return .orange }
+        return .red
     }
 
     // MARK: - Fingerprint Panel
