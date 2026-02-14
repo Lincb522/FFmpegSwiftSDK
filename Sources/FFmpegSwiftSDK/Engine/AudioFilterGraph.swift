@@ -131,6 +131,11 @@ final class AudioFilterGraph {
         if bassGain != clamped {
             bassGain = clamped
             needsRebuild = true
+            // 如果已有有效的音频格式，立即重建滤镜图
+            if sampleRate > 0 && channelCount > 0 {
+                rebuildGraph()
+                needsRebuild = false
+            }
         }
         lock.unlock()
     }
@@ -143,6 +148,11 @@ final class AudioFilterGraph {
         if trebleGain != clamped {
             trebleGain = clamped
             needsRebuild = true
+            // 如果已有有效的音频格式，立即重建滤镜图
+            if sampleRate > 0 && channelCount > 0 {
+                rebuildGraph()
+                needsRebuild = false
+            }
         }
         lock.unlock()
     }
@@ -156,6 +166,11 @@ final class AudioFilterGraph {
         if surroundLevel != clamped {
             surroundLevel = clamped
             needsRebuild = true
+            // 如果已有有效的音频格式，立即重建滤镜图
+            if sampleRate > 0 && channelCount > 0 {
+                rebuildGraph()
+                needsRebuild = false
+            }
         }
         lock.unlock()
     }
@@ -169,6 +184,11 @@ final class AudioFilterGraph {
         if reverbLevel != clamped {
             reverbLevel = clamped
             needsRebuild = true
+            // 如果已有有效的音频格式，立即重建滤镜图
+            if sampleRate > 0 && channelCount > 0 {
+                rebuildGraph()
+                needsRebuild = false
+            }
         }
         lock.unlock()
     }
@@ -182,6 +202,11 @@ final class AudioFilterGraph {
         if pitchSemitones != clamped {
             pitchSemitones = clamped
             needsRebuild = true
+            // 如果已有有效的音频格式，立即重建滤镜图
+            if sampleRate > 0 && channelCount > 0 {
+                rebuildGraph()
+                needsRebuild = false
+            }
         }
         lock.unlock()
     }
