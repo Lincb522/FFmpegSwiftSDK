@@ -37,6 +37,9 @@ final class AudioRenderer {
     /// Optional 频谱分析器
     private var spectrumAnalyzer: SpectrumAnalyzer?
 
+    /// Optional 音频修复引擎（在所有效果之后、输出之前）
+    private var repairEngine: AudioRepairEngine?
+
     /// Sample rate of the current audio stream (needed by EQ).
     private var sampleRate: Int = 44100
 
@@ -104,6 +107,11 @@ final class AudioRenderer {
     /// Sets the spectrum analyzer for real-time FFT analysis.
     func setSpectrumAnalyzer(_ analyzer: SpectrumAnalyzer?) {
         spectrumAnalyzer = analyzer
+    }
+
+    /// Sets the audio repair engine for automatic audio artifact fixing.
+    func setRepairEngine(_ engine: AudioRepairEngine?) {
+        repairEngine = engine
     }
 
     /// Starts the audio renderer with the given audio format.
@@ -365,7 +373,12 @@ final class AudioRenderer {
             // Do NOT deallocate buf.data — it points to the output buffer we don't own
         }
 
-        // 输入频谱分析器（在所有音效处理之后）
+        // 音频修复引擎（在所有音效处理之后、输出到硬件之前）
+        if let engine = repairEngine, engine.isActive, samplesWritten > 0 {
+            engine.process(output, frameCount: frameCount, channelCount: channelCount, sampleRate: sampleRate)
+        }
+
+        // 输入频谱分析器（在所有处理之后）
         if let analyzer = spectrumAnalyzer, analyzer.isEnabled, samplesWritten > 0 {
             analyzer.feed(samples: output, frameCount: frameCount, channelCount: channelCount)
         }

@@ -119,6 +119,19 @@ public final class StreamPlayer {
     /// ```
     public let lyricSyncer: LyricSyncer
 
+    /// 音频修复引擎。自动检测并修复削波、电流声、卡顿、爆音等问题。
+    ///
+    /// 推荐在播放开始时一键启用：
+    /// ```swift
+    /// player.audioRepair.enableAll()
+    /// ```
+    /// 也可按需单独启用：
+    /// ```swift
+    /// player.audioRepair.isDeclipEnabled = true
+    /// player.audioRepair.isSoftLimiterEnabled = true
+    /// ```
+    public var audioRepair: AudioRepairEngine { repairEngine }
+
     /// The video display layer. Add this to your view's layer hierarchy to show video.
     ///
     /// Usage (UIKit):
@@ -143,6 +156,9 @@ public final class StreamPlayer {
 
     /// FFmpeg avfilter 音频滤镜图（loudnorm、atempo、volume）
     internal let audioFilterGraph: AudioFilterGraph
+
+    /// 音频修复引擎
+    internal let repairEngine: AudioRepairEngine
 
     /// The connection manager for establishing media connections.
     private var connectionManager: ConnectionManager?
@@ -228,6 +244,7 @@ public final class StreamPlayer {
     public init() {
         self.eqFilter = EQFilter()
         self.audioFilterGraph = AudioFilterGraph()
+        self.repairEngine = AudioRepairEngine()
         self.equalizer = AudioEqualizer(filter: eqFilter)
         self.audioEffects = AudioEffects(filterGraph: audioFilterGraph)
         self.spectrumAnalyzer = SpectrumAnalyzer()
@@ -240,6 +257,7 @@ public final class StreamPlayer {
         self.audioRenderer.setEQFilter(eqFilter)
         self.audioRenderer.setAudioFilterGraph(audioFilterGraph)
         self.audioRenderer.setSpectrumAnalyzer(spectrumAnalyzer)
+        self.audioRenderer.setRepairEngine(repairEngine)
         // 设置 equalizer 的 audioEffects 引用，用于应用预设的环绕效果
         self.equalizer.audioEffects = self.audioEffects
     }
@@ -459,6 +477,9 @@ public final class StreamPlayer {
 
         // 重置同步控制器
         syncController.reset()
+
+        // 重置修复引擎状态（避免 seek 后的跨帧检测误判）
+        repairEngine.reset()
 
         // 执行 seek
         do {
