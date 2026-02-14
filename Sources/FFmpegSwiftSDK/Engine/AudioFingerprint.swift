@@ -172,7 +172,7 @@ public final class AudioFingerprint {
         
         if isStreamURL {
             ctx.pointee.probesize = 5 * 1024 * 1024
-            ctx.pointee.max_analyze_duration = 10 * AV_TIME_BASE
+            ctx.pointee.max_analyze_duration = Int64(10 * AV_TIME_BASE)
         }
         
         ret = avformat_find_stream_info(ctx, nil)
@@ -272,7 +272,7 @@ public final class AudioFingerprint {
             ret = av_read_frame(ctx, packet)
             
             if ret < 0 {
-                if ret == AVERROR_EOF || ret == -Int32(EAGAIN) {
+                if ret == FFmpegErrorCode.AVERROR_EOF || ret == -Int32(EAGAIN) {
                     break
                 }
                 readErrors += 1

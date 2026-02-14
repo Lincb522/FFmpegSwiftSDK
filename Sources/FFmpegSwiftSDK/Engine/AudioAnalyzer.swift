@@ -1562,7 +1562,7 @@ extension AudioAnalyzer {
         // 对于流媒体，设置更长的探测时间
         if isStreamURL {
             ctx.pointee.probesize = 5 * 1024 * 1024  // 5MB
-            ctx.pointee.max_analyze_duration = 10 * AV_TIME_BASE  // 10 秒
+            ctx.pointee.max_analyze_duration = Int64(10 * AV_TIME_BASE)  // 10 秒
         }
         
         ret = avformat_find_stream_info(ctx, nil)
@@ -1666,7 +1666,7 @@ extension AudioAnalyzer {
             
             if ret < 0 {
                 // 检查是否为 EOF 或错误
-                if ret == AVERROR_EOF || ret == -Int32(EAGAIN) {
+                if ret == FFmpegErrorCode.AVERROR_EOF || ret == -Int32(EAGAIN) {
                     break
                 }
                 readErrors += 1
