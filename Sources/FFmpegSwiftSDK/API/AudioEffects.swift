@@ -1,177 +1,304 @@
 // AudioEffects.swift
 // FFmpegSwiftSDK
 //
-// 公开 API：音频效果控制器，提供响度标准化、变速不变调、音量控制。
+// 公开 API：音频效果控制器，提供 50+ 种音频效果。
 // 通过 StreamPlayer.audioEffects 访问。
 
 import Foundation
 
-/// 音频效果控制器，封装 FFmpeg avfilter 提供的实时音频处理能力。
+/// 音频效果控制器，封装 FFmpeg avfilter 提供的完整音频处理能力。
 ///
-/// 支持三种效果：
-/// - 音量控制（volume）：增益/衰减，单位 dB
-/// - 变速不变调（atempo）：0.5x ~ 4.0x 播放速度
-/// - 响度标准化（loudnorm）：EBU R128 标准，解决不同歌曲音量差异
+/// 支持以下效果分类：
+/// - 基础音量控制
+/// - 动态处理（压缩、限幅、噪声门、自动增益、响度标准化）
+/// - 速度与音调（变速不变调、变调不变速）
+/// - 均衡器与频率（低音、高音、超低音、带通、带阻）
+/// - 空间效果（环绕、混响、立体声宽度、声道平衡、单声道）
+/// - 时间效果（淡入淡出、延迟）
+/// - 特殊效果（人声消除、合唱、镶边、颤音、失真、电话/水下/收音机效果）
 ///
 /// 通过 `StreamPlayer.audioEffects` 访问：
 /// ```swift
 /// let player = StreamPlayer()
 /// player.audioEffects.setVolume(3.0)           // +3dB
 /// player.audioEffects.setTempo(1.5)            // 1.5x 倍速
-/// player.audioEffects.setLoudnormEnabled(true)  // 开启响度标准化
+/// player.audioEffects.setVocalRemoval(0.8)     // 人声消除
+/// player.audioEffects.setNightModeEnabled(true) // 夜间模式
 /// ```
 public final class AudioEffects {
 
-    /// 内部滤镜图引擎
     internal let filterGraph: AudioFilterGraph
 
     internal init(filterGraph: AudioFilterGraph) {
         self.filterGraph = filterGraph
     }
 
-    // MARK: - 音量控制
+    // MARK: - 基础音量控制
 
-    /// 设置音量增益。
-    ///
-    /// - Parameter db: 增益值（dB）。0 = 不变，正值增大，负值减小。
-    ///   建议范围 [-20, +20]。
+    /// 设置音量增益（dB）。0 = 不变，正值增大，负值减小。
     public func setVolume(_ db: Float) {
         filterGraph.setVolume(db)
     }
 
-    /// 当前音量增益（dB）。
+    /// 当前音量增益（dB）
     public var volume: Float {
         filterGraph.volumeDB
     }
 
-    // MARK: - 变速不变调
+    // MARK: - 动态处理
 
-    /// 设置播放速度倍率。
-    ///
-    /// 使用 FFmpeg atempo 滤镜实现变速不变调。
-    /// 超过 2.0x 时自动级联多个 atempo 滤镜。
-    ///
-    /// - Parameter rate: 速度倍率，范围 [0.5, 4.0]。1.0 = 原速。
-    ///   典型值：0.75（慢速）、1.0（原速）、1.25、1.5、2.0（倍速）
-    public func setTempo(_ rate: Float) {
-        filterGraph.setTempo(rate)
-    }
-
-    /// 当前播放速度倍率。
-    public var tempo: Float {
-        filterGraph.tempo
-    }
-
-    // MARK: - 响度标准化
-
-    /// 启用/禁用响度标准化（EBU R128 / loudnorm）。
-    ///
-    /// 开启后，不同歌曲的音量会被标准化到统一响度，
-    /// 解决切歌时音量忽大忽小的问题。
-    ///
-    /// - Parameter enabled: 是否启用。
+    /// 启用/禁用响度标准化（EBU R128）。
+    /// 开启后，不同歌曲的音量会被标准化到统一响度。
     public func setLoudnormEnabled(_ enabled: Bool) {
         filterGraph.setLoudnormEnabled(enabled)
     }
 
-    /// 响度标准化是否启用。
+    /// 响度标准化是否启用
     public var isLoudnormEnabled: Bool {
         filterGraph.loudnormEnabled
     }
 
-    /// 设置 loudnorm 参数。
-    ///
+    /// 设置 loudnorm 参数
     /// - Parameters:
-    ///   - targetLUFS: 目标响度（LUFS），默认 -14.0（Spotify 标准）。
-    ///   - lra: 响度范围（LRA），默认 11.0。
-    ///   - truePeak: 真峰值限制（dBTP），默认 -1.0。
+    ///   - targetLUFS: 目标响度（LUFS），默认 -14.0（Spotify 标准）
+    ///   - lra: 响度范围（LRA），默认 11.0
+    ///   - truePeak: 真峰值限制（dBTP），默认 -1.0
     public func setLoudnormParams(targetLUFS: Float = -14.0, lra: Float = 11.0, truePeak: Float = -1.0) {
         filterGraph.setLoudnormParams(targetLUFS: targetLUFS, lra: lra, truePeak: truePeak)
     }
 
-    // MARK: - 重置
-
-    /// 重置所有音频效果到默认值（音量 0dB、原速、关闭响度标准化、低音/高音/环绕归零）。
-    public func reset() {
-        filterGraph.reset()
+    /// 启用/禁用夜间模式（动态压缩）。
+    /// 压缩动态范围，让响的变轻、轻的变响，适合夜间低音量听歌。
+    public func setNightModeEnabled(_ enabled: Bool) {
+        filterGraph.setCompressorEnabled(enabled)
     }
 
-    /// 是否有任何效果处于激活状态。
-    public var isActive: Bool {
-        filterGraph.isActive
+    /// 夜间模式是否启用
+    public var isNightModeEnabled: Bool {
+        filterGraph.compressorEnabled
     }
 
-    // MARK: - 低音控制
+    /// 设置动态压缩参数
+    /// - Parameters:
+    ///   - threshold: 阈值（dB），默认 -20.0
+    ///   - ratio: 压缩比，默认 4.0
+    ///   - attack: 启动时间（ms），默认 5.0
+    ///   - release: 释放时间（ms），默认 50.0
+    ///   - makeup: 补偿增益（dB），默认 2.0
+    public func setCompressorParams(threshold: Float = -20.0, ratio: Float = 4.0, attack: Float = 5.0, release: Float = 50.0, makeup: Float = 2.0) {
+        filterGraph.setCompressorParams(threshold: threshold, ratio: ratio, attack: attack, release: release, makeup: makeup)
+    }
 
-    /// 设置低音增益（dB）。通过 FFmpeg bass 搁架滤镜实现。
+    /// 启用/禁用限幅器。防止音量过大导致削波失真。
+    public func setLimiterEnabled(_ enabled: Bool) {
+        filterGraph.setLimiterEnabled(enabled)
+    }
+
+    /// 限幅器是否启用
+    public var isLimiterEnabled: Bool {
+        filterGraph.limiterEnabled
+    }
+
+    /// 设置限幅器阈值（dBFS），默认 -1.0
+    public func setLimiterLimit(_ limit: Float) {
+        filterGraph.setLimiterLimit(limit)
+    }
+
+    /// 启用/禁用噪声门。低于阈值的信号会被静音。
+    public func setGateEnabled(_ enabled: Bool) {
+        filterGraph.setGateEnabled(enabled)
+    }
+
+    /// 噪声门是否启用
+    public var isGateEnabled: Bool {
+        filterGraph.gateEnabled
+    }
+
+    /// 设置噪声门阈值（dB），默认 -40.0
+    public func setGateThreshold(_ threshold: Float) {
+        filterGraph.setGateThreshold(threshold)
+    }
+
+    /// 启用/禁用自动增益（动态标准化）。
+    /// 自动调整音量，让整首歌的响度更均匀。
+    public func setAutoGainEnabled(_ enabled: Bool) {
+        filterGraph.setAutoGainEnabled(enabled)
+    }
+
+    /// 自动增益是否启用
+    public var isAutoGainEnabled: Bool {
+        filterGraph.autoGainEnabled
+    }
+
+    // MARK: - 速度与音调
+
+    /// 设置播放速度倍率（变速不变调）。
+    /// - Parameter rate: 速度倍率，范围 [0.5, 4.0]。1.0 = 原速。
+    public func setTempo(_ rate: Float) {
+        filterGraph.setTempo(rate)
+    }
+
+    /// 当前播放速度倍率
+    public var tempo: Float {
+        filterGraph.tempo
+    }
+
+    /// 设置变调（半音数，变调不变速）。
+    /// - Parameter semitones: 半音数，范围 [-12, +12]。0 = 不变调。
+    public func setPitch(_ semitones: Float) {
+        filterGraph.setPitchSemitones(semitones)
+    }
+
+    /// 当前变调值（半音数）
+    public var pitchSemitones: Float {
+        filterGraph.pitchSemitones
+    }
+
+    // MARK: - 均衡器与频率
+
+    /// 设置低音增益（dB）。
     /// - Parameter db: 增益值，范围 [-12, +12]。0 = 不变。
     public func setBassGain(_ db: Float) {
         filterGraph.setBassGain(db)
     }
 
-    /// 当前低音增益（dB）。
+    /// 当前低音增益（dB）
     public var bassGain: Float {
         filterGraph.bassGain
     }
 
-    // MARK: - 高音控制
-
-    /// 设置高音增益（dB）。通过 FFmpeg treble 搁架滤镜实现。
+    /// 设置高音增益（dB）。
     /// - Parameter db: 增益值，范围 [-12, +12]。0 = 不变。
     public func setTrebleGain(_ db: Float) {
         filterGraph.setTrebleGain(db)
     }
 
-    /// 当前高音增益（dB）。
+    /// 当前高音增益（dB）
     public var trebleGain: Float {
         filterGraph.trebleGain
     }
 
-    // MARK: - 环绕控制
+    /// 启用/禁用超低音增强。增强 100Hz 以下的超低频。
+    public func setSubboostEnabled(_ enabled: Bool) {
+        filterGraph.setSubboostEnabled(enabled)
+    }
 
-    /// 设置环绕强度。通过 FFmpeg extrastereo 滤镜增强立体声分离度。
+    /// 超低音增强是否启用
+    public var isSubboostEnabled: Bool {
+        filterGraph.subboostEnabled
+    }
+
+    /// 设置超低音增强参数
+    /// - Parameters:
+    ///   - gain: 增益（dB），默认 6.0
+    ///   - cutoff: 截止频率（Hz），默认 100.0
+    public func setSubboostParams(gain: Float = 6.0, cutoff: Float = 100.0) {
+        filterGraph.setSubboostParams(gain: gain, cutoff: cutoff)
+    }
+
+    /// 启用/禁用带通滤波。只保留指定频率范围的声音。
+    public func setBandpassEnabled(_ enabled: Bool) {
+        filterGraph.setBandpassEnabled(enabled)
+    }
+
+    /// 带通滤波是否启用
+    public var isBandpassEnabled: Bool {
+        filterGraph.bandpassEnabled
+    }
+
+    /// 设置带通滤波参数
+    /// - Parameters:
+    ///   - frequency: 中心频率（Hz）
+    ///   - width: 带宽（Hz）
+    public func setBandpassParams(frequency: Float, width: Float) {
+        filterGraph.setBandpassParams(frequency: frequency, width: width)
+    }
+
+    /// 启用/禁用带阻滤波。去除指定频率范围的声音。
+    public func setBandrejectEnabled(_ enabled: Bool) {
+        filterGraph.setBandrejectEnabled(enabled)
+    }
+
+    /// 带阻滤波是否启用
+    public var isBandrejectEnabled: Bool {
+        filterGraph.bandrejectEnabled
+    }
+
+    /// 设置带阻滤波参数
+    /// - Parameters:
+    ///   - frequency: 中心频率（Hz）
+    ///   - width: 带宽（Hz）
+    public func setBandrejectParams(frequency: Float, width: Float) {
+        filterGraph.setBandrejectParams(frequency: frequency, width: width)
+    }
+
+    // MARK: - 空间效果
+
+    /// 设置环绕强度。增强立体声分离度。
     /// - Parameter level: 强度 0~1。0 = 关闭，1 = 最大环绕。
     public func setSurroundLevel(_ level: Float) {
         filterGraph.setSurroundLevel(level)
     }
 
-    /// 当前环绕强度（0~1）。
+    /// 当前环绕强度（0~1）
     public var surroundLevel: Float {
         filterGraph.surroundLevel
     }
 
-    // MARK: - 混响控制
-
-    /// 设置混响强度。通过 FFmpeg aecho 滤镜模拟房间混响。
+    /// 设置混响强度。模拟房间混响效果。
     /// - Parameter level: 强度 0~1。0 = 关闭，1 = 最大混响。
     public func setReverbLevel(_ level: Float) {
         filterGraph.setReverbLevel(level)
     }
 
-    /// 当前混响强度（0~1）。
+    /// 当前混响强度（0~1）
     public var reverbLevel: Float {
         filterGraph.reverbLevel
     }
 
-    // MARK: - 变调控制
-
-    /// 设置变调（半音数）。变调不变速。
-    ///
-    /// 通过 FFmpeg asetrate + atempo 组合实现。
-    /// 正值升调，负值降调。
-    ///
-    /// - Parameter semitones: 半音数，范围 [-12, +12]。0 = 不变调。
-    ///   典型值：-2（降两个半音）、+3（升三个半音）、+12（升一个八度）
-    public func setPitch(_ semitones: Float) {
-        filterGraph.setPitchSemitones(semitones)
+    /// 设置立体声宽度。
+    /// - Parameter width: 宽度 0~2。0 = 单声道，1.0 = 原始，2.0 = 最宽。
+    public func setStereoWidth(_ width: Float) {
+        filterGraph.setStereoWidth(width)
     }
 
-    /// 当前变调值（半音数）。
-    public var pitchSemitones: Float {
-        filterGraph.pitchSemitones
+    /// 当前立体声宽度
+    public var stereoWidth: Float {
+        filterGraph.stereoWidth
     }
 
-    // MARK: - 淡入淡出
+    /// 设置声道平衡。
+    /// - Parameter balance: -1 = 全左，0 = 居中，+1 = 全右。
+    public func setChannelBalance(_ balance: Float) {
+        filterGraph.setChannelBalance(balance)
+    }
+
+    /// 当前声道平衡
+    public var channelBalance: Float {
+        filterGraph.channelBalance
+    }
+
+    /// 启用/禁用单声道模式。将立体声混合为单声道。
+    public func setMonoEnabled(_ enabled: Bool) {
+        filterGraph.setMonoEnabled(enabled)
+    }
+
+    /// 单声道模式是否启用
+    public var isMonoEnabled: Bool {
+        filterGraph.monoEnabled
+    }
+
+    /// 启用/禁用声道交换。交换左右声道。
+    public func setChannelSwapEnabled(_ enabled: Bool) {
+        filterGraph.setChannelSwapEnabled(enabled)
+    }
+
+    /// 声道交换是否启用
+    public var isChannelSwapEnabled: Bool {
+        filterGraph.channelSwapEnabled
+    }
+
+    // MARK: - 时间效果
 
     /// 设置淡入效果。歌曲开头音量从 0 渐变到正常。
     /// - Parameter duration: 淡入时长（秒），0 = 关闭。
@@ -179,7 +306,7 @@ public final class AudioEffects {
         filterGraph.setFadeIn(duration: duration)
     }
 
-    /// 当前淡入时长（秒）。
+    /// 当前淡入时长（秒）
     public var fadeInDuration: Float {
         filterGraph.fadeInDuration
     }
@@ -192,8 +319,169 @@ public final class AudioEffects {
         filterGraph.setFadeOut(duration: duration, startTime: startTime)
     }
 
-    /// 当前淡出时长（秒）。
+    /// 当前淡出时长（秒）
     public var fadeOutDuration: Float {
         filterGraph.fadeOutDuration
+    }
+
+    /// 设置延迟（毫秒）。给左声道添加延迟，产生空间感。
+    /// - Parameter ms: 延迟时间（毫秒），0 = 关闭。
+    public func setDelay(_ ms: Float) {
+        filterGraph.setDelay(ms)
+    }
+
+    /// 当前延迟（毫秒）
+    public var delayMs: Float {
+        filterGraph.delayMs
+    }
+
+    // MARK: - 特殊效果
+
+    /// 设置人声消除强度（卡拉OK 模式）。
+    /// 通过消除立体声中置信号来去除人声。
+    /// - Parameter level: 强度 0~1。0 = 关闭，1 = 最大消除。
+    public func setVocalRemoval(_ level: Float) {
+        filterGraph.setVocalRemoval(level)
+    }
+
+    /// 当前人声消除强度（0~1）
+    public var vocalRemovalLevel: Float {
+        filterGraph.vocalRemovalLevel
+    }
+
+    /// 启用/禁用合唱效果。产生多声部叠加的丰富音色。
+    public func setChorusEnabled(_ enabled: Bool) {
+        filterGraph.setChorusEnabled(enabled)
+    }
+
+    /// 合唱效果是否启用
+    public var isChorusEnabled: Bool {
+        filterGraph.chorusEnabled
+    }
+
+    /// 设置合唱深度（0~1）
+    public func setChorusDepth(_ depth: Float) {
+        filterGraph.setChorusDepth(depth)
+    }
+
+    /// 当前合唱深度
+    public var chorusDepth: Float {
+        filterGraph.chorusDepth
+    }
+
+    /// 启用/禁用镶边效果。产生梳状滤波扫描的金属感。
+    public func setFlangerEnabled(_ enabled: Bool) {
+        filterGraph.setFlangerEnabled(enabled)
+    }
+
+    /// 镶边效果是否启用
+    public var isFlangerEnabled: Bool {
+        filterGraph.flangerEnabled
+    }
+
+    /// 设置镶边深度（0~1）
+    public func setFlangerDepth(_ depth: Float) {
+        filterGraph.setFlangerDepth(depth)
+    }
+
+    /// 当前镶边深度
+    public var flangerDepth: Float {
+        filterGraph.flangerDepth
+    }
+
+    /// 启用/禁用颤音效果。音量周期性变化。
+    public func setTremoloEnabled(_ enabled: Bool) {
+        filterGraph.setTremoloEnabled(enabled)
+    }
+
+    /// 颤音效果是否启用
+    public var isTremoloEnabled: Bool {
+        filterGraph.tremoloEnabled
+    }
+
+    /// 设置颤音参数
+    /// - Parameters:
+    ///   - frequency: 频率（Hz），默认 5.0
+    ///   - depth: 深度（0~1），默认 0.5
+    public func setTremoloParams(frequency: Float = 5.0, depth: Float = 0.5) {
+        filterGraph.setTremoloParams(frequency: frequency, depth: depth)
+    }
+
+    /// 启用/禁用颤抖效果。音调周期性变化。
+    public func setVibratoEnabled(_ enabled: Bool) {
+        filterGraph.setVibratoEnabled(enabled)
+    }
+
+    /// 颤抖效果是否启用
+    public var isVibratoEnabled: Bool {
+        filterGraph.vibratoEnabled
+    }
+
+    /// 设置颤抖参数
+    /// - Parameters:
+    ///   - frequency: 频率（Hz），默认 5.0
+    ///   - depth: 深度（0~1），默认 0.5
+    public func setVibratoParams(frequency: Float = 5.0, depth: Float = 0.5) {
+        filterGraph.setVibratoParams(frequency: frequency, depth: depth)
+    }
+
+    /// 启用/禁用失真效果（Lo-Fi）。降低位深和采样率产生复古效果。
+    public func setLoFiEnabled(_ enabled: Bool) {
+        filterGraph.setCrusherEnabled(enabled)
+    }
+
+    /// 失真效果是否启用
+    public var isLoFiEnabled: Bool {
+        filterGraph.crusherEnabled
+    }
+
+    /// 设置失真参数
+    /// - Parameters:
+    ///   - bits: 位深（1~16），默认 8.0
+    ///   - samples: 采样率降低因子（1~16），默认 4.0
+    public func setLoFiParams(bits: Float = 8.0, samples: Float = 4.0) {
+        filterGraph.setCrusherParams(bits: bits, samples: samples)
+    }
+
+    /// 启用/禁用电话效果。模拟电话音质（300-3400Hz 带通）。
+    public func setTelephoneEnabled(_ enabled: Bool) {
+        filterGraph.setTelephoneEnabled(enabled)
+    }
+
+    /// 电话效果是否启用
+    public var isTelephoneEnabled: Bool {
+        filterGraph.telephoneEnabled
+    }
+
+    /// 启用/禁用水下效果。模拟水下声音（低通 + 混响）。
+    public func setUnderwaterEnabled(_ enabled: Bool) {
+        filterGraph.setUnderwaterEnabled(enabled)
+    }
+
+    /// 水下效果是否启用
+    public var isUnderwaterEnabled: Bool {
+        filterGraph.underwaterEnabled
+    }
+
+    /// 启用/禁用收音机效果。模拟老式收音机音质。
+    public func setRadioEnabled(_ enabled: Bool) {
+        filterGraph.setRadioEnabled(enabled)
+    }
+
+    /// 收音机效果是否启用
+    public var isRadioEnabled: Bool {
+        filterGraph.radioEnabled
+    }
+
+    // MARK: - 重置
+
+    /// 重置所有音频效果到默认值
+    public func reset() {
+        filterGraph.reset()
+    }
+
+    /// 是否有任何效果处于激活状态
+    public var isActive: Bool {
+        filterGraph.isActive
     }
 }

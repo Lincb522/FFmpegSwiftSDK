@@ -39,8 +39,29 @@ final class PlayerViewModel: ObservableObject {
     @Published var trebleGain: Float = 0      // dB
     @Published var surroundLevel: Float = 0   // 0~1
     @Published var reverbLevel: Float = 0     // 0~1
+    @Published var stereoWidth: Float = 1.0   // 0~2
+    @Published var channelBalance: Float = 0  // -1~1
+    @Published var vocalRemoval: Float = 0    // 0~1
     @Published var fadeInDuration: Float = 0  // 秒
+    @Published var delayMs: Float = 0         // 毫秒
+    
+    // 开关效果
     @Published var loudnormEnabled: Bool = false
+    @Published var nightModeEnabled: Bool = false
+    @Published var limiterEnabled: Bool = false
+    @Published var gateEnabled: Bool = false
+    @Published var autoGainEnabled: Bool = false
+    @Published var subboostEnabled: Bool = false
+    @Published var monoEnabled: Bool = false
+    @Published var channelSwapEnabled: Bool = false
+    @Published var chorusEnabled: Bool = false
+    @Published var flangerEnabled: Bool = false
+    @Published var tremoloEnabled: Bool = false
+    @Published var vibratoEnabled: Bool = false
+    @Published var lofiEnabled: Bool = false
+    @Published var telephoneEnabled: Bool = false
+    @Published var underwaterEnabled: Bool = false
+    @Published var radioEnabled: Bool = false
 
     // MARK: - 频谱
 
@@ -77,6 +98,36 @@ final class PlayerViewModel: ObservableObject {
         didSet { player.lyricSyncer.offset = lyricOffset }
     }
     @Published var hasLyrics: Bool = false
+
+    // MARK: - 音频分析
+
+    @Published var isAnalyzing: Bool = false
+    @Published var analysisResult: AnalysisResult?
+
+    struct AnalysisResult {
+        let bpm: Float
+        let peakDB: Float
+        let loudnessLUFS: Float
+        let dynamicRange: Float
+        let spectralCentroid: Float
+        let hasClipping: Bool
+        let phaseDescription: String
+    }
+
+    // MARK: - 歌曲识别
+
+    @Published var isRecognizing: Bool = false
+    @Published var recognitionResult: RecognitionResult?
+    @Published var recognitionMessage: String?
+    @Published var fingerprintDBCount: Int = 0
+
+    struct RecognitionResult {
+        let title: String
+        let artist: String
+        let score: Float
+    }
+
+    private let fingerprintDB = FingerprintDatabase()
 
     // MARK: - 内部
 
@@ -207,9 +258,29 @@ final class PlayerViewModel: ObservableObject {
         player.audioEffects.setReverbLevel(level)
     }
 
+    func updateStereoWidth(_ width: Float) {
+        stereoWidth = width
+        player.audioEffects.setStereoWidth(width)
+    }
+
+    func updateChannelBalance(_ balance: Float) {
+        channelBalance = balance
+        player.audioEffects.setChannelBalance(balance)
+    }
+
+    func updateVocalRemoval(_ level: Float) {
+        vocalRemoval = level
+        player.audioEffects.setVocalRemoval(level)
+    }
+
     func updateFadeIn(_ duration: Float) {
         fadeInDuration = duration
         player.audioEffects.setFadeIn(duration: duration)
+    }
+
+    func updateDelay(_ ms: Float) {
+        delayMs = ms
+        player.audioEffects.setDelay(ms)
     }
 
     func toggleLoudnorm() {
@@ -217,12 +288,97 @@ final class PlayerViewModel: ObservableObject {
         player.audioEffects.setLoudnormEnabled(loudnormEnabled)
     }
 
+    func toggleNightMode() {
+        nightModeEnabled.toggle()
+        player.audioEffects.setNightModeEnabled(nightModeEnabled)
+    }
+
+    func toggleLimiter() {
+        limiterEnabled.toggle()
+        player.audioEffects.setLimiterEnabled(limiterEnabled)
+    }
+
+    func toggleGate() {
+        gateEnabled.toggle()
+        player.audioEffects.setGateEnabled(gateEnabled)
+    }
+
+    func toggleAutoGain() {
+        autoGainEnabled.toggle()
+        player.audioEffects.setAutoGainEnabled(autoGainEnabled)
+    }
+
+    func toggleSubboost() {
+        subboostEnabled.toggle()
+        player.audioEffects.setSubboostEnabled(subboostEnabled)
+    }
+
+    func toggleMono() {
+        monoEnabled.toggle()
+        player.audioEffects.setMonoEnabled(monoEnabled)
+    }
+
+    func toggleChannelSwap() {
+        channelSwapEnabled.toggle()
+        player.audioEffects.setChannelSwapEnabled(channelSwapEnabled)
+    }
+
+    func toggleChorus() {
+        chorusEnabled.toggle()
+        player.audioEffects.setChorusEnabled(chorusEnabled)
+    }
+
+    func toggleFlanger() {
+        flangerEnabled.toggle()
+        player.audioEffects.setFlangerEnabled(flangerEnabled)
+    }
+
+    func toggleTremolo() {
+        tremoloEnabled.toggle()
+        player.audioEffects.setTremoloEnabled(tremoloEnabled)
+    }
+
+    func toggleVibrato() {
+        vibratoEnabled.toggle()
+        player.audioEffects.setVibratoEnabled(vibratoEnabled)
+    }
+
+    func toggleLoFi() {
+        lofiEnabled.toggle()
+        player.audioEffects.setLoFiEnabled(lofiEnabled)
+    }
+
+    func toggleTelephone() {
+        telephoneEnabled.toggle()
+        player.audioEffects.setTelephoneEnabled(telephoneEnabled)
+    }
+
+    func toggleUnderwater() {
+        underwaterEnabled.toggle()
+        player.audioEffects.setUnderwaterEnabled(underwaterEnabled)
+    }
+
+    func toggleRadio() {
+        radioEnabled.toggle()
+        player.audioEffects.setRadioEnabled(radioEnabled)
+    }
+
     func resetEffects() {
         player.audioEffects.reset()
         volume = 0; tempo = 1.0; pitch = 0
         bassGain = 0; trebleGain = 0
         surroundLevel = 0; reverbLevel = 0
-        fadeInDuration = 0; loudnormEnabled = false
+        stereoWidth = 1.0; channelBalance = 0
+        vocalRemoval = 0
+        fadeInDuration = 0; delayMs = 0
+        loudnormEnabled = false; nightModeEnabled = false
+        limiterEnabled = false; gateEnabled = false
+        autoGainEnabled = false; subboostEnabled = false
+        monoEnabled = false; channelSwapEnabled = false
+        chorusEnabled = false; flangerEnabled = false
+        tremoloEnabled = false; vibratoEnabled = false
+        lofiEnabled = false; telephoneEnabled = false
+        underwaterEnabled = false; radioEnabled = false
     }
 
     // MARK: - A-B 循环
@@ -267,6 +423,125 @@ final class PlayerViewModel: ObservableObject {
 
     func adjustLyricOffset(_ delta: Double) {
         lyricOffset += delta
+    }
+
+    // MARK: - 音频分析
+
+    func runAnalysis() {
+        guard !waveformSamples.isEmpty else {
+            // 需要先有波形数据
+            return
+        }
+
+        isAnalyzing = true
+        analysisResult = nil
+
+        Task.detached { [weak self] in
+            guard let self else { return }
+
+            // 从波形数据生成采样（简化版，实际应从原始音频获取）
+            let samples = self.waveformSamples.flatMap { [$0.positive, $0.negative] }
+            let sampleRate = 44100
+
+            // BPM 检测
+            let bpmResult = AudioAnalyzer.detectBPM(samples: samples, sampleRate: sampleRate)
+
+            // 峰值检测
+            let peakResult = AudioAnalyzer.detectPeak(samples: samples, sampleRate: sampleRate)
+
+            // 响度测量
+            let loudnessResult = AudioAnalyzer.measureLoudness(samples: samples, sampleRate: sampleRate, channelCount: 1)
+
+            // 动态范围
+            let dynamicResult = AudioAnalyzer.analyzeDynamicRange(samples: samples, sampleRate: sampleRate)
+
+            // 频率分析
+            let freqResult = AudioAnalyzer.analyzeFrequency(samples: samples, sampleRate: sampleRate)
+
+            // 削波检测
+            let clippingResult = AudioAnalyzer.detectClipping(samples: samples, sampleRate: sampleRate)
+
+            // 相位检测（需要立体声数据，这里简化处理）
+            let phaseDesc = "单声道数据"
+
+            await MainActor.run {
+                self.analysisResult = AnalysisResult(
+                    bpm: bpmResult.bpm,
+                    peakDB: peakResult.peakDB,
+                    loudnessLUFS: loudnessResult.integratedLUFS,
+                    dynamicRange: dynamicResult.dynamicRange,
+                    spectralCentroid: freqResult.spectralCentroid,
+                    hasClipping: clippingResult.hasSevereClipping,
+                    phaseDescription: phaseDesc
+                )
+                self.isAnalyzing = false
+            }
+        }
+    }
+
+    // MARK: - 歌曲识别
+
+    func addToFingerprintDB() {
+        guard !waveformSamples.isEmpty else {
+            recognitionMessage = "请先播放音频"
+            return
+        }
+
+        let title = metaTitle ?? "未知歌曲"
+        let artist = metaArtist ?? "未知艺术家"
+
+        // 从波形生成简化采样
+        let samples = waveformSamples.flatMap { [$0.positive, $0.negative] }
+        let fingerprint = AudioFingerprint.generate(samples: samples, sampleRate: 44100)
+
+        let entry = FingerprintDatabase.Entry(
+            id: UUID().uuidString,
+            title: title,
+            artist: artist,
+            fingerprint: fingerprint
+        )
+
+        fingerprintDB.add(entry: entry)
+        fingerprintDBCount = fingerprintDB.count
+        recognitionMessage = "已添加: \(title)"
+    }
+
+    func recognizeSong() {
+        guard !waveformSamples.isEmpty else {
+            recognitionMessage = "请先播放音频"
+            return
+        }
+
+        guard fingerprintDBCount > 0 else {
+            recognitionMessage = "数据库为空，请先添加歌曲"
+            return
+        }
+
+        isRecognizing = true
+        recognitionResult = nil
+        recognitionMessage = nil
+
+        Task.detached { [weak self] in
+            guard let self else { return }
+
+            let samples = self.waveformSamples.flatMap { [$0.positive, $0.negative] }
+
+            if let result = self.fingerprintDB.recognize(samples: samples, sampleRate: 44100) {
+                await MainActor.run {
+                    self.recognitionResult = RecognitionResult(
+                        title: result.title,
+                        artist: result.artist,
+                        score: result.score
+                    )
+                    self.isRecognizing = false
+                }
+            } else {
+                await MainActor.run {
+                    self.recognitionMessage = "未能识别，请尝试其他片段"
+                    self.isRecognizing = false
+                }
+            }
+        }
     }
 
     // MARK: - 元数据

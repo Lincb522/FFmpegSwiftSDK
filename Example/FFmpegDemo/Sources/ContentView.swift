@@ -14,6 +14,8 @@ struct ContentView: View {
         case effects = "音效"
         case lyrics = "歌词"
         case abloop = "A-B循环"
+        case analysis = "分析"
+        case fingerprint = "识别"
     }
 
     var body: some View {
@@ -33,10 +35,12 @@ struct ContentView: View {
                         panelSelector
                         if let panel = activePanel {
                             switch panel {
-                            case .eq:      eqPanel
-                            case .effects: effectsPanel
-                            case .lyrics:  lyricsPanel
-                            case .abloop:  abLoopPanel
+                            case .eq:          eqPanel
+                            case .effects:     effectsPanel
+                            case .lyrics:      lyricsPanel
+                            case .abloop:      abLoopPanel
+                            case .analysis:    analysisPanel
+                            case .fingerprint: fingerprintPanel
                             }
                         }
                     }
@@ -357,30 +361,70 @@ struct ContentView: View {
                         .font(.system(size: 11)).foregroundStyle(accent)
                 }
 
+                // 基础效果
                 effectSlider(label: "音量", value: vm.volume, range: -20...20, unit: "dB") { vm.updateVolume($0) }
                 effectSlider(label: "倍速", value: vm.tempo, range: 0.5...4.0, unit: "x") { vm.updateTempo($0) }
                 effectSlider(label: "变调", value: vm.pitch, range: -12...12, unit: "半音") { vm.updatePitch($0) }
                 effectSlider(label: "低音", value: vm.bassGain, range: -12...12, unit: "dB") { vm.updateBass($0) }
                 effectSlider(label: "高音", value: vm.trebleGain, range: -12...12, unit: "dB") { vm.updateTreble($0) }
+                
+                // 空间效果
                 effectSlider(label: "环绕", value: vm.surroundLevel, range: 0...1, unit: "") { vm.updateSurround($0) }
                 effectSlider(label: "混响", value: vm.reverbLevel, range: 0...1, unit: "") { vm.updateReverb($0) }
+                effectSlider(label: "立体声宽度", value: vm.stereoWidth, range: 0...2, unit: "") { vm.updateStereoWidth($0) }
+                effectSlider(label: "声道平衡", value: vm.channelBalance, range: -1...1, unit: "") { vm.updateChannelBalance($0) }
+                
+                // 人声消除
+                effectSlider(label: "人声消除", value: vm.vocalRemoval, range: 0...1, unit: "") { vm.updateVocalRemoval($0) }
+                
+                // 时间效果
                 effectSlider(label: "淡入", value: vm.fadeInDuration, range: 0...10, unit: "秒") { vm.updateFadeIn($0) }
+                effectSlider(label: "延迟", value: vm.delayMs, range: 0...500, unit: "ms") { vm.updateDelay($0) }
 
-                // 响度标准化开关
-                HStack {
-                    Text("响度标准化")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(0.7))
-                    Spacer()
-                    Toggle("", isOn: Binding(
-                        get: { vm.loudnormEnabled },
-                        set: { _ in vm.toggleLoudnorm() }
-                    ))
-                    .tint(accent)
-                    .labelsHidden()
+                Divider().background(Color.white.opacity(0.1))
+                
+                // 开关效果
+                Text("特殊效果").font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.6)).frame(maxWidth: .infinity, alignment: .leading)
+                
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    effectToggle("响度标准化", isOn: vm.loudnormEnabled) { vm.toggleLoudnorm() }
+                    effectToggle("夜间模式", isOn: vm.nightModeEnabled) { vm.toggleNightMode() }
+                    effectToggle("限幅器", isOn: vm.limiterEnabled) { vm.toggleLimiter() }
+                    effectToggle("噪声门", isOn: vm.gateEnabled) { vm.toggleGate() }
+                    effectToggle("自动增益", isOn: vm.autoGainEnabled) { vm.toggleAutoGain() }
+                    effectToggle("超低音增强", isOn: vm.subboostEnabled) { vm.toggleSubboost() }
+                    effectToggle("单声道", isOn: vm.monoEnabled) { vm.toggleMono() }
+                    effectToggle("声道交换", isOn: vm.channelSwapEnabled) { vm.toggleChannelSwap() }
+                    effectToggle("合唱", isOn: vm.chorusEnabled) { vm.toggleChorus() }
+                    effectToggle("镶边", isOn: vm.flangerEnabled) { vm.toggleFlanger() }
+                    effectToggle("颤音", isOn: vm.tremoloEnabled) { vm.toggleTremolo() }
+                    effectToggle("颤抖", isOn: vm.vibratoEnabled) { vm.toggleVibrato() }
+                    effectToggle("Lo-Fi 失真", isOn: vm.lofiEnabled) { vm.toggleLoFi() }
+                    effectToggle("电话效果", isOn: vm.telephoneEnabled) { vm.toggleTelephone() }
+                    effectToggle("水下效果", isOn: vm.underwaterEnabled) { vm.toggleUnderwater() }
+                    effectToggle("收音机效果", isOn: vm.radioEnabled) { vm.toggleRadio() }
                 }
             }
         }
+    }
+
+    private func effectToggle(_ label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(isOn ? accent : Color.white.opacity(0.2))
+                    .frame(width: 8, height: 8)
+                Text(label)
+                    .font(.system(size: 11))
+                    .foregroundStyle(isOn ? .white : .white.opacity(0.5))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isOn ? accent.opacity(0.2) : Color.white.opacity(0.05))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
     }
 
     private func effectSlider(label: String, value: Float, range: ClosedRange<Float>, unit: String, onChange: @escaping (Float) -> Void) -> some View {
@@ -527,6 +571,128 @@ struct ContentView: View {
                     Text("循环中: \(fmt(vm.abPointA)) → \(fmt(vm.abPointB))")
                         .font(.system(size: 11))
                         .foregroundStyle(accent)
+                }
+            }
+        }
+    }
+
+    // MARK: - Analysis Panel
+
+    private var analysisPanel: some View {
+        panelCard {
+            VStack(spacing: 12) {
+                HStack {
+                    Text("音频分析")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Spacer()
+                    Button("分析") { vm.runAnalysis() }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(accent.opacity(0.3))
+                        .clipShape(Capsule())
+                }
+
+                if vm.isAnalyzing {
+                    ProgressView()
+                        .tint(accent)
+                } else if let result = vm.analysisResult {
+                    VStack(alignment: .leading, spacing: 8) {
+                        analysisRow("BPM", "\(String(format: "%.1f", result.bpm))")
+                        analysisRow("峰值", "\(String(format: "%.1f", result.peakDB)) dBFS")
+                        analysisRow("响度", "\(String(format: "%.1f", result.loudnessLUFS)) LUFS")
+                        analysisRow("动态范围", "\(String(format: "%.1f", result.dynamicRange)) dB")
+                        analysisRow("频谱质心", "\(String(format: "%.0f", result.spectralCentroid)) Hz")
+                        analysisRow("削波", result.hasClipping ? "⚠️ 检测到" : "✓ 无")
+                        analysisRow("相位", result.phaseDescription)
+                    }
+                } else {
+                    Text("点击「分析」按钮开始分析当前音频")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.4))
+                        .frame(minHeight: 60)
+                }
+            }
+        }
+    }
+
+    private func analysisRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 12))
+                .foregroundStyle(.white.opacity(0.6))
+            Spacer()
+            Text(value)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(accent)
+        }
+    }
+
+    // MARK: - Fingerprint Panel
+
+    private var fingerprintPanel: some View {
+        panelCard {
+            VStack(spacing: 12) {
+                HStack {
+                    Text("歌曲识别")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Spacer()
+                    Text("数据库: \(vm.fingerprintDBCount) 首")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
+
+                HStack(spacing: 10) {
+                    Button("添加到库") { vm.addToFingerprintDB() }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.green.opacity(0.3))
+                        .clipShape(Capsule())
+
+                    Button("识别歌曲") { vm.recognizeSong() }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(accent.opacity(0.3))
+                        .clipShape(Capsule())
+                }
+
+                if vm.isRecognizing {
+                    HStack(spacing: 8) {
+                        ProgressView().tint(accent)
+                        Text("识别中...")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
+                } else if let result = vm.recognitionResult {
+                    VStack(spacing: 6) {
+                        Text(result.title)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(accent)
+                        Text(result.artist)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.white.opacity(0.7))
+                        Text("匹配度: \(String(format: "%.0f", result.score * 100))%")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                    .padding(.vertical, 8)
+                } else if let msg = vm.recognitionMessage {
+                    Text(msg)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .frame(minHeight: 40)
+                } else {
+                    Text("先添加歌曲到数据库，然后可以识别未知音频")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.4))
+                        .frame(minHeight: 40)
                 }
             }
         }
