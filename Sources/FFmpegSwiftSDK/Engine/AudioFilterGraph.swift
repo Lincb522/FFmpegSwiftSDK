@@ -151,6 +151,68 @@ final class AudioFilterGraph {
     /// 收音机效果
     private(set) var radioEnabled: Bool = false
     
+    // ==================== 新增：音频修复滤镜 ====================
+    
+    /// FFT 降噪（afftdn）
+    private(set) var fftDenoiseEnabled: Bool = false
+    private(set) var fftDenoiseAmount: Float = 10.0  // 降噪量（dB）
+    
+    /// 去除脉冲噪声（adeclick）
+    private(set) var declickEnabled: Bool = false
+    
+    /// 去除削波失真（adeclip）
+    private(set) var declipEnabled: Bool = false
+    
+    // ==================== 新增：动态处理滤镜 ====================
+    
+    /// 动态音频标准化（dynaudnorm）- 比 loudnorm 更适合实时
+    private(set) var dynaudnormEnabled: Bool = false
+    private(set) var dynaudnormFrameLen: Int = 500      // 帧长度（ms）
+    private(set) var dynaudnormGaussSize: Int = 31      // 高斯窗口大小
+    private(set) var dynaudnormPeak: Float = 0.95       // 目标峰值
+    
+    /// 语音标准化（speechnorm）
+    private(set) var speechnormEnabled: Bool = false
+    
+    /// 压缩/扩展（compand）- 更灵活的动态控制
+    private(set) var compandEnabled: Bool = false
+    
+    // ==================== 新增：空间音效滤镜 ====================
+    
+    /// Bauer 立体声转双耳（bs2b）- 改善耳机听感
+    private(set) var bs2bEnabled: Bool = false
+    private(set) var bs2bFcut: Int = 700       // 截止频率
+    private(set) var bs2bFeed: Int = 50        // 馈送量（0.1dB 单位）
+    
+    /// 耳机交叉馈送（crossfeed）
+    private(set) var crossfeedEnabled: Bool = false
+    private(set) var crossfeedStrength: Float = 0.3
+    
+    /// Haas 效果（haas）- 增加空间感
+    private(set) var haasEnabled: Bool = false
+    private(set) var haasDelay: Float = 20.0   // 延迟（ms）
+    
+    /// 虚拟低音（virtualbass）
+    private(set) var virtualbassEnabled: Bool = false
+    private(set) var virtualbassCutoff: Float = 250.0
+    private(set) var virtualbassStrength: Float = 3.0
+    
+    // ==================== 新增：音色处理滤镜 ====================
+    
+    /// 激励器（aexciter）- 增加高频泛音
+    private(set) var exciterEnabled: Bool = false
+    private(set) var exciterAmount: Float = 3.0   // 激励量（dB）
+    private(set) var exciterFreq: Float = 7500.0  // 起始频率
+    
+    /// 软削波（asoftclip）- 温暖的失真
+    private(set) var softclipEnabled: Bool = false
+    private(set) var softclipType: Int = 0        // 0=tanh, 1=atan, 2=cubic, 3=exp, 4=alg, 5=quintic, 6=sin, 7=erf
+    
+    /// 对话增强（dialoguenhance）
+    private(set) var dialogueEnhanceEnabled: Bool = false
+    private(set) var dialogueEnhanceOriginal: Float = 1.0
+    private(set) var dialogueEnhanceEnhance: Float = 1.0
+    
     // ==================== 内部状态 ====================
     
     private var processedSamples: Int64 = 0
@@ -209,7 +271,20 @@ final class AudioFilterGraph {
                crusherEnabled ||
                telephoneEnabled ||
                underwaterEnabled ||
-               radioEnabled
+               radioEnabled ||
+               fftDenoiseEnabled ||
+               declickEnabled ||
+               declipEnabled ||
+               dynaudnormEnabled ||
+               speechnormEnabled ||
+               compandEnabled ||
+               bs2bEnabled ||
+               crossfeedEnabled ||
+               haasEnabled ||
+               virtualbassEnabled ||
+               exciterEnabled ||
+               softclipEnabled ||
+               dialogueEnhanceEnabled
     }
 
     // MARK: - 初始化
@@ -670,6 +745,222 @@ final class AudioFilterGraph {
         lock.unlock()
     }
 
+    // MARK: - 新增：音频修复滤镜
+
+    /// 启用/禁用 FFT 降噪
+    func setFFTDenoiseEnabled(_ enabled: Bool) {
+        lock.lock()
+        if fftDenoiseEnabled != enabled {
+            fftDenoiseEnabled = enabled
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置 FFT 降噪参数
+    func setFFTDenoiseAmount(_ amount: Float) {
+        lock.lock()
+        fftDenoiseAmount = max(0, min(100, amount))
+        if fftDenoiseEnabled { needsRebuild = true }
+        lock.unlock()
+    }
+
+    /// 启用/禁用去除脉冲噪声
+    func setDeclickEnabled(_ enabled: Bool) {
+        lock.lock()
+        if declickEnabled != enabled {
+            declickEnabled = enabled
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 启用/禁用去除削波失真
+    func setDeclipEnabled(_ enabled: Bool) {
+        lock.lock()
+        if declipEnabled != enabled {
+            declipEnabled = enabled
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    // MARK: - 新增：动态处理滤镜
+
+    /// 启用/禁用动态音频标准化
+    func setDynaudnormEnabled(_ enabled: Bool) {
+        lock.lock()
+        if dynaudnormEnabled != enabled {
+            dynaudnormEnabled = enabled
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置动态音频标准化参数
+    func setDynaudnormParams(frameLen: Int = 500, gaussSize: Int = 31, peak: Float = 0.95) {
+        lock.lock()
+        dynaudnormFrameLen = frameLen
+        dynaudnormGaussSize = gaussSize
+        dynaudnormPeak = peak
+        if dynaudnormEnabled { needsRebuild = true }
+        lock.unlock()
+    }
+
+    /// 启用/禁用语音标准化
+    func setSpeechnormEnabled(_ enabled: Bool) {
+        lock.lock()
+        if speechnormEnabled != enabled {
+            speechnormEnabled = enabled
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 启用/禁用压缩/扩展
+    func setCompandEnabled(_ enabled: Bool) {
+        lock.lock()
+        if compandEnabled != enabled {
+            compandEnabled = enabled
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    // MARK: - 新增：空间音效滤镜
+
+    /// 启用/禁用 Bauer 立体声转双耳
+    func setBS2BEnabled(_ enabled: Bool) {
+        lock.lock()
+        if bs2bEnabled != enabled {
+            bs2bEnabled = enabled
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置 BS2B 参数
+    func setBS2BParams(fcut: Int = 700, feed: Int = 50) {
+        lock.lock()
+        bs2bFcut = fcut
+        bs2bFeed = feed
+        if bs2bEnabled { needsRebuild = true }
+        lock.unlock()
+    }
+
+    /// 启用/禁用耳机交叉馈送
+    func setCrossfeedEnabled(_ enabled: Bool) {
+        lock.lock()
+        if crossfeedEnabled != enabled {
+            crossfeedEnabled = enabled
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置交叉馈送强度
+    func setCrossfeedStrength(_ strength: Float) {
+        lock.lock()
+        crossfeedStrength = max(0, min(1, strength))
+        if crossfeedEnabled { needsRebuild = true }
+        lock.unlock()
+    }
+
+    /// 启用/禁用 Haas 效果
+    func setHaasEnabled(_ enabled: Bool) {
+        lock.lock()
+        if haasEnabled != enabled {
+            haasEnabled = enabled
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置 Haas 延迟（ms）
+    func setHaasDelay(_ delay: Float) {
+        lock.lock()
+        haasDelay = max(0, min(40, delay))
+        if haasEnabled { needsRebuild = true }
+        lock.unlock()
+    }
+
+    /// 启用/禁用虚拟低音
+    func setVirtualbassEnabled(_ enabled: Bool) {
+        lock.lock()
+        if virtualbassEnabled != enabled {
+            virtualbassEnabled = enabled
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置虚拟低音参数
+    func setVirtualbassParams(cutoff: Float = 250.0, strength: Float = 3.0) {
+        lock.lock()
+        virtualbassCutoff = cutoff
+        virtualbassStrength = strength
+        if virtualbassEnabled { needsRebuild = true }
+        lock.unlock()
+    }
+
+    // MARK: - 新增：音色处理滤镜
+
+    /// 启用/禁用激励器
+    func setExciterEnabled(_ enabled: Bool) {
+        lock.lock()
+        if exciterEnabled != enabled {
+            exciterEnabled = enabled
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置激励器参数
+    func setExciterParams(amount: Float = 3.0, freq: Float = 7500.0) {
+        lock.lock()
+        exciterAmount = amount
+        exciterFreq = freq
+        if exciterEnabled { needsRebuild = true }
+        lock.unlock()
+    }
+
+    /// 启用/禁用软削波
+    func setSoftclipEnabled(_ enabled: Bool) {
+        lock.lock()
+        if softclipEnabled != enabled {
+            softclipEnabled = enabled
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置软削波类型（0=tanh, 1=atan, 2=cubic, 3=exp, 4=alg, 5=quintic, 6=sin, 7=erf）
+    func setSoftclipType(_ type: Int) {
+        lock.lock()
+        softclipType = max(0, min(7, type))
+        if softclipEnabled { needsRebuild = true }
+        lock.unlock()
+    }
+
+    /// 启用/禁用对话增强
+    func setDialogueEnhanceEnabled(_ enabled: Bool) {
+        lock.lock()
+        if dialogueEnhanceEnabled != enabled {
+            dialogueEnhanceEnabled = enabled
+            needsRebuild = true
+        }
+        lock.unlock()
+    }
+
+    /// 设置对话增强参数
+    func setDialogueEnhanceParams(original: Float = 1.0, enhance: Float = 1.0) {
+        lock.lock()
+        dialogueEnhanceOriginal = original
+        dialogueEnhanceEnhance = enhance
+        if dialogueEnhanceEnabled { needsRebuild = true }
+        lock.unlock()
+    }
+
     // MARK: - 重置
 
     /// 重置已处理采样计数
@@ -745,6 +1036,38 @@ final class AudioFilterGraph {
         telephoneEnabled = false
         underwaterEnabled = false
         radioEnabled = false
+        // 新增：音频修复滤镜
+        fftDenoiseEnabled = false
+        fftDenoiseAmount = 10.0
+        declickEnabled = false
+        declipEnabled = false
+        // 新增：动态处理滤镜
+        dynaudnormEnabled = false
+        dynaudnormFrameLen = 500
+        dynaudnormGaussSize = 31
+        dynaudnormPeak = 0.95
+        speechnormEnabled = false
+        compandEnabled = false
+        // 新增：空间音效滤镜
+        bs2bEnabled = false
+        bs2bFcut = 700
+        bs2bFeed = 50
+        crossfeedEnabled = false
+        crossfeedStrength = 0.3
+        haasEnabled = false
+        haasDelay = 20.0
+        virtualbassEnabled = false
+        virtualbassCutoff = 250.0
+        virtualbassStrength = 3.0
+        // 新增：音色处理滤镜
+        exciterEnabled = false
+        exciterAmount = 3.0
+        exciterFreq = 7500.0
+        softclipEnabled = false
+        softclipType = 0
+        dialogueEnhanceEnabled = false
+        dialogueEnhanceOriginal = 1.0
+        dialogueEnhanceEnhance = 1.0
         // 状态
         processedSamples = 0
         needsRebuild = true
@@ -1074,6 +1397,60 @@ final class AudioFilterGraph {
             }
         }
 
+        // 动态音频标准化（dynaudnorm）- 比 loudnorm 更适合实时处理
+        if dynaudnormEnabled {
+            let args = "framelen=\(dynaudnormFrameLen):gausssize=\(dynaudnormGaussSize):peak=\(String(format: "%.2f", dynaudnormPeak))"
+            if let ctx = createFilter(graph: graph, name: "dynaudnorm", label: "dynaudnorm", args: args) {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // 语音标准化（speechnorm）- 专为语音内容优化
+        if speechnormEnabled {
+            if let ctx = createFilter(graph: graph, name: "speechnorm", label: "speechnorm", args: "e=12.5:r=0.0001:l=1") {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // 压缩/扩展（compand）- 更灵活的动态控制
+        if compandEnabled {
+            // 默认参数：轻度压缩，适合音乐
+            let args = "attacks=0.3:decays=0.8:points=-80/-80|-45/-45|-27/-25|0/-10:soft-knee=6:gain=5"
+            if let ctx = createFilter(graph: graph, name: "compand", label: "compand", args: args) {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // ==================== 音频修复滤镜 ====================
+
+        // FFT 降噪（afftdn）- 基于 FFT 的降噪
+        if fftDenoiseEnabled {
+            let args = "nr=\(String(format: "%.0f", fftDenoiseAmount)):nf=-25:tn=1"
+            if let ctx = createFilter(graph: graph, name: "afftdn", label: "afftdn", args: args) {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // 去除脉冲噪声（adeclick）
+        if declickEnabled {
+            if let ctx = createFilter(graph: graph, name: "adeclick", label: "adeclick", args: "w=55:o=75") {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // 去除削波失真（adeclip）
+        if declipEnabled {
+            if let ctx = createFilter(graph: graph, name: "adeclip", label: "adeclip", args: "w=55:o=75") {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
         // ==================== 均衡器与频率 ====================
         
         // 低音
@@ -1193,6 +1570,76 @@ final class AudioFilterGraph {
         if monoEnabled && channelCount == 2 {
             if let ctx = createFilter(graph: graph, name: "pan", label: "mono",
                                        args: "mono|c0=0.5*c0+0.5*c1") {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // ==================== 新增：空间音效滤镜 ====================
+
+        // Bauer 立体声转双耳（bs2b）- 改善耳机听感
+        if bs2bEnabled && channelCount == 2 {
+            let args = "fcut=\(bs2bFcut):feed=\(bs2bFeed)"
+            if let ctx = createFilter(graph: graph, name: "bs2b", label: "bs2b", args: args) {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // 耳机交叉馈送（crossfeed）- 使用 stereotools 实现
+        if crossfeedEnabled && channelCount == 2 {
+            // 使用 stereotools 的 balance 参数模拟交叉馈送
+            let args = "balance_in=\(String(format: "%.2f", crossfeedStrength)):balance_out=\(String(format: "%.2f", crossfeedStrength * 0.5))"
+            if let ctx = createFilter(graph: graph, name: "stereotools", label: "crossfeed", args: args) {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // Haas 效果（haas）- 增加空间感
+        if haasEnabled && channelCount == 2 {
+            let args = "level_in=1:level_out=1:side_gain=1:middle_source=mid:middle_phase=false:left_delay=\(String(format: "%.1f", haasDelay)):left_balance=-1:left_gain=1:left_phase=false:right_delay=0:right_balance=1:right_gain=1:right_phase=false"
+            if let ctx = createFilter(graph: graph, name: "haas", label: "haas", args: args) {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // 虚拟低音（virtualbass）- 通过谐波生成低音感
+        if virtualbassEnabled {
+            let args = "cutoff=\(String(format: "%.0f", virtualbassCutoff)):strength=\(String(format: "%.1f", virtualbassStrength))"
+            if let ctx = createFilter(graph: graph, name: "virtualbass", label: "virtualbass", args: args) {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // ==================== 新增：音色处理滤镜 ====================
+
+        // 激励器（aexciter）- 增加高频泛音
+        if exciterEnabled {
+            let args = "level_in=1:level_out=1:amount=\(String(format: "%.1f", exciterAmount)):drive=1:blend=0:freq=\(String(format: "%.0f", exciterFreq)):ceil=9999:listen=false"
+            if let ctx = createFilter(graph: graph, name: "aexciter", label: "aexciter", args: args) {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // 软削波（asoftclip）- 温暖的失真
+        if softclipEnabled {
+            let typeNames = ["tanh", "atan", "cubic", "exp", "alg", "quintic", "sin", "erf"]
+            let typeName = typeNames[min(softclipType, typeNames.count - 1)]
+            let args = "type=\(typeName):threshold=1:output=1:param=1:oversample=1"
+            if let ctx = createFilter(graph: graph, name: "asoftclip", label: "asoftclip", args: args) {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+        }
+
+        // 对话增强（dialoguenhance）- 增强人声清晰度
+        if dialogueEnhanceEnabled && channelCount == 2 {
+            let args = "original=\(String(format: "%.1f", dialogueEnhanceOriginal)):enhance=\(String(format: "%.1f", dialogueEnhanceEnhance))"
+            if let ctx = createFilter(graph: graph, name: "dialoguenhance", label: "dialoguenhance", args: args) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }

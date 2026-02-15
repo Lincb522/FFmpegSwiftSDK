@@ -473,6 +473,232 @@ public final class AudioEffects {
         filterGraph.radioEnabled
     }
 
+    // MARK: - 音频修复
+
+    /// 启用/禁用 FFT 降噪。基于 FFT 的智能降噪，适合去除背景噪声。
+    public func setFFTDenoiseEnabled(_ enabled: Bool) {
+        filterGraph.setFFTDenoiseEnabled(enabled)
+    }
+
+    /// FFT 降噪是否启用
+    public var isFFTDenoiseEnabled: Bool {
+        filterGraph.fftDenoiseEnabled
+    }
+
+    /// 设置 FFT 降噪量（dB），范围 0~100，默认 10
+    public func setFFTDenoiseAmount(_ amount: Float) {
+        filterGraph.setFFTDenoiseAmount(amount)
+    }
+
+    /// 当前 FFT 降噪量
+    public var fftDenoiseAmount: Float {
+        filterGraph.fftDenoiseAmount
+    }
+
+    /// 启用/禁用去除脉冲噪声（Declick）。去除黑胶唱片的爆音。
+    public func setDeclickEnabled(_ enabled: Bool) {
+        filterGraph.setDeclickEnabled(enabled)
+    }
+
+    /// 去除脉冲噪声是否启用
+    public var isDeclickEnabled: Bool {
+        filterGraph.declickEnabled
+    }
+
+    /// 启用/禁用去除削波失真（Declip）。修复过载录音的削波。
+    public func setDeclipEnabled(_ enabled: Bool) {
+        filterGraph.setDeclipEnabled(enabled)
+    }
+
+    /// 去除削波失真是否启用
+    public var isDeclipEnabled: Bool {
+        filterGraph.declipEnabled
+    }
+
+    // MARK: - 高级动态处理
+
+    /// 启用/禁用动态音频标准化（Dynaudnorm）。
+    /// 比 loudnorm 更适合实时处理，响应更快。
+    public func setDynaudnormEnabled(_ enabled: Bool) {
+        filterGraph.setDynaudnormEnabled(enabled)
+    }
+
+    /// 动态音频标准化是否启用
+    public var isDynaudnormEnabled: Bool {
+        filterGraph.dynaudnormEnabled
+    }
+
+    /// 设置动态音频标准化参数
+    /// - Parameters:
+    ///   - frameLen: 帧长度（ms），默认 500
+    ///   - gaussSize: 高斯窗口大小，默认 31
+    ///   - peak: 目标峰值（0~1），默认 0.95
+    public func setDynaudnormParams(frameLen: Int = 500, gaussSize: Int = 31, peak: Float = 0.95) {
+        filterGraph.setDynaudnormParams(frameLen: frameLen, gaussSize: gaussSize, peak: peak)
+    }
+
+    /// 启用/禁用语音标准化（Speechnorm）。专为语音内容优化的标准化。
+    public func setSpeechnormEnabled(_ enabled: Bool) {
+        filterGraph.setSpeechnormEnabled(enabled)
+    }
+
+    /// 语音标准化是否启用
+    public var isSpeechnormEnabled: Bool {
+        filterGraph.speechnormEnabled
+    }
+
+    /// 启用/禁用压缩/扩展（Compand）。更灵活的动态范围控制。
+    public func setCompandEnabled(_ enabled: Bool) {
+        filterGraph.setCompandEnabled(enabled)
+    }
+
+    /// 压缩/扩展是否启用
+    public var isCompandEnabled: Bool {
+        filterGraph.compandEnabled
+    }
+
+    // MARK: - 耳机优化
+
+    /// 启用/禁用 Bauer 立体声转双耳（BS2B）。
+    /// 改善耳机听感，减少头中效应。
+    public func setBS2BEnabled(_ enabled: Bool) {
+        filterGraph.setBS2BEnabled(enabled)
+    }
+
+    /// BS2B 是否启用
+    public var isBS2BEnabled: Bool {
+        filterGraph.bs2bEnabled
+    }
+
+    /// 设置 BS2B 参数
+    /// - Parameters:
+    ///   - fcut: 截止频率（Hz），默认 700
+    ///   - feed: 馈送量（0.1dB 单位），默认 50
+    public func setBS2BParams(fcut: Int = 700, feed: Int = 50) {
+        filterGraph.setBS2BParams(fcut: fcut, feed: feed)
+    }
+
+    /// 启用/禁用耳机交叉馈送（Crossfeed）。
+    /// 模拟扬声器听感，减少耳机疲劳。
+    public func setCrossfeedEnabled(_ enabled: Bool) {
+        filterGraph.setCrossfeedEnabled(enabled)
+    }
+
+    /// 交叉馈送是否启用
+    public var isCrossfeedEnabled: Bool {
+        filterGraph.crossfeedEnabled
+    }
+
+    /// 设置交叉馈送强度（0~1），默认 0.3
+    public func setCrossfeedStrength(_ strength: Float) {
+        filterGraph.setCrossfeedStrength(strength)
+    }
+
+    /// 当前交叉馈送强度
+    public var crossfeedStrength: Float {
+        filterGraph.crossfeedStrength
+    }
+
+    /// 启用/禁用 Haas 效果。通过微小延迟增加空间感。
+    public func setHaasEnabled(_ enabled: Bool) {
+        filterGraph.setHaasEnabled(enabled)
+    }
+
+    /// Haas 效果是否启用
+    public var isHaasEnabled: Bool {
+        filterGraph.haasEnabled
+    }
+
+    /// 设置 Haas 延迟（ms），范围 0~40，默认 20
+    public func setHaasDelay(_ delay: Float) {
+        filterGraph.setHaasDelay(delay)
+    }
+
+    /// 当前 Haas 延迟
+    public var haasDelay: Float {
+        filterGraph.haasDelay
+    }
+
+    // MARK: - 低音增强
+
+    /// 启用/禁用虚拟低音（Virtualbass）。
+    /// 通过谐波生成在小扬声器上产生低音感。
+    public func setVirtualbassEnabled(_ enabled: Bool) {
+        filterGraph.setVirtualbassEnabled(enabled)
+    }
+
+    /// 虚拟低音是否启用
+    public var isVirtualbassEnabled: Bool {
+        filterGraph.virtualbassEnabled
+    }
+
+    /// 设置虚拟低音参数
+    /// - Parameters:
+    ///   - cutoff: 截止频率（Hz），默认 250
+    ///   - strength: 强度，默认 3.0
+    public func setVirtualbassParams(cutoff: Float = 250.0, strength: Float = 3.0) {
+        filterGraph.setVirtualbassParams(cutoff: cutoff, strength: strength)
+    }
+
+    // MARK: - 音色处理
+
+    /// 启用/禁用激励器（Exciter）。增加高频泛音，让声音更明亮。
+    public func setExciterEnabled(_ enabled: Bool) {
+        filterGraph.setExciterEnabled(enabled)
+    }
+
+    /// 激励器是否启用
+    public var isExciterEnabled: Bool {
+        filterGraph.exciterEnabled
+    }
+
+    /// 设置激励器参数
+    /// - Parameters:
+    ///   - amount: 激励量（dB），默认 3.0
+    ///   - freq: 起始频率（Hz），默认 7500
+    public func setExciterParams(amount: Float = 3.0, freq: Float = 7500.0) {
+        filterGraph.setExciterParams(amount: amount, freq: freq)
+    }
+
+    /// 启用/禁用软削波（Softclip）。产生温暖的模拟失真。
+    public func setSoftclipEnabled(_ enabled: Bool) {
+        filterGraph.setSoftclipEnabled(enabled)
+    }
+
+    /// 软削波是否启用
+    public var isSoftclipEnabled: Bool {
+        filterGraph.softclipEnabled
+    }
+
+    /// 设置软削波类型
+    /// - Parameter type: 0=tanh, 1=atan, 2=cubic, 3=exp, 4=alg, 5=quintic, 6=sin, 7=erf
+    public func setSoftclipType(_ type: Int) {
+        filterGraph.setSoftclipType(type)
+    }
+
+    /// 当前软削波类型
+    public var softclipType: Int {
+        filterGraph.softclipType
+    }
+
+    /// 启用/禁用对话增强（Dialogue Enhance）。增强人声清晰度。
+    public func setDialogueEnhanceEnabled(_ enabled: Bool) {
+        filterGraph.setDialogueEnhanceEnabled(enabled)
+    }
+
+    /// 对话增强是否启用
+    public var isDialogueEnhanceEnabled: Bool {
+        filterGraph.dialogueEnhanceEnabled
+    }
+
+    /// 设置对话增强参数
+    /// - Parameters:
+    ///   - original: 原始信号混合量，默认 1.0
+    ///   - enhance: 增强信号混合量，默认 1.0
+    public func setDialogueEnhanceParams(original: Float = 1.0, enhance: Float = 1.0) {
+        filterGraph.setDialogueEnhanceParams(original: original, enhance: enhance)
+    }
+
     // MARK: - 重置
 
     /// 重置所有音频效果到默认值
