@@ -1330,6 +1330,8 @@ final class AudioFilterGraph {
         bufferSrcCtx = src
 
         // abuffersink（输出）
+        // 不需要设置 sample_fmts 和 sample_rates，因为我们在滤镜链末尾
+        // 使用 aformat 滤镜来强制输出格式
         guard let abuffersink = avfilter_get_by_name("abuffersink") else {
             destroyGraphUnsafe()
             return
@@ -1341,12 +1343,6 @@ final class AudioFilterGraph {
             return
         }
         bufferSinkCtx = sink
-
-        // 设置 sink 输出格式
-        var sampleFmts: [Int32] = [AV_SAMPLE_FMT_FLT.rawValue, -1]
-        av_opt_set_int_list_flt(sink, "sample_fmts", &sampleFmts)
-        var sampleRates: [Int32] = [Int32(sampleRate), -1]
-        av_opt_set_int_list_int(sink, "sample_rates", &sampleRates)
 
         // 构建滤镜链
         var lastCtx = src
@@ -1962,22 +1958,4 @@ final class AudioFilterGraph {
         bufferSrcCtx = nil
         bufferSinkCtx = nil
     }
-}
-
-// MARK: - 辅助函数
-
-private func av_opt_set_int_list_flt(_ obj: UnsafeMutablePointer<AVFilterContext>, _ name: String, _ list: UnsafeMutablePointer<Int32>) {
-    var count = 0
-    while list[count] != -1 { count += 1 }
-    count += 1
-    av_opt_set_bin(obj, name, UnsafeRawPointer(list).assumingMemoryBound(to: UInt8.self),
-                   Int32(count * MemoryLayout<Int32>.size), AV_OPT_SEARCH_CHILDREN)
-}
-
-private func av_opt_set_int_list_int(_ obj: UnsafeMutablePointer<AVFilterContext>, _ name: String, _ list: UnsafeMutablePointer<Int32>) {
-    var count = 0
-    while list[count] != -1 { count += 1 }
-    count += 1
-    av_opt_set_bin(obj, name, UnsafeRawPointer(list).assumingMemoryBound(to: UInt8.self),
-                   Int32(count * MemoryLayout<Int32>.size), AV_OPT_SEARCH_CHILDREN)
 }
