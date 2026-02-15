@@ -40,7 +40,7 @@ public final class AudioRepairEngine {
     public var limiterThreshold: Float = 0.95
     public var fadeInSamples: Int = 256
     public var loudnessSmoothing: Float = 0.15
-    public var loudnessJumpThreshold: Float = 3.0
+    public var loudnessJumpThreshold: Float = 12.0  // 12dB，只有非常剧烈的变化才触发
     public var filterTransitionMaxSamples: Int = 1024
     public var reverbTailHistoryLength: Int = 4096
 
@@ -385,6 +385,8 @@ public final class AudioRepairEngine {
 
     // MARK: - 5. 重叠消除
 
+    /// 检测真正的帧重叠（相同数据被发送两次）
+    /// 只有当前帧开头与上一帧尾部几乎完全相同时才触发
     private func applyOverlapRemoval(
         _ data: UnsafeMutablePointer<Float>,
         frameCount: Int,
@@ -393,9 +395,10 @@ public final class AudioRepairEngine {
         guard !previousTail.isEmpty else { return }
         let tailFrames = previousTail.count / channelCount
         let compareFrames = min(16, min(tailFrames, frameCount))
-        var correlation: Float = 0
-        var energy1: Float = 0
-        var energy2: Float = 0
+        
+        // 计算差异而非相关性 - 真正的重叠意味着数据几乎完全相同
+        var totalDiff: Float = 0
+        var totalEnergy: Float = 0
         for frame in 0..<compareFrames {
             for ch in 0..<channelCount {
                 let tailIdx = (tailFrames - compareFrames + frame) * channelCount + ch
@@ -403,15 +406,15 @@ public final class AudioRepairEngine {
                 if tailIdx < previousTail.count {
                     let a = previousTail[tailIdx]
                     let b = data[dataIdx]
-                    correlation += a * b
-                    energy1 += a * a
-                    energy2 += b * b
+                    totalDiff += abs(a - b)
+                    totalEnergy += abs(a) + abs(b)
                 }
             }
         }
-        let denominator = sqrtf(energy1 * energy2)
-        let normalizedCorr = denominator > 0 ? correlation / denominator : 0
-        if normalizedCorr > 0.8 {
+        
+        // 只有当差异极小（< 1%）才认为是真正的重叠
+        let normalizedDiff = totalEnergy > 0.001 ? totalDiff / totalEnergy : 1.0
+        if normalizedDiff < 0.01 && totalEnergy > 0.01 {
             let fadeFrames = min(16, frameCount)
             for frame in 0..<fadeFrames {
                 let fadeIn = Float(frame) / Float(fadeFrames)
@@ -584,10 +587,12 @@ public final class AudioRepairEngine {
         for i in 0..<checkSamples { sumSq += data[i] * data[i] }
         let currentRMS = sqrtf(sumSq / Float(max(checkSamples, 1)))
 
-        // 检测 RMS 突变
-        if prevFrameRMS > 0.001 && currentRMS > 0.001 && stableFrameCount > 3 {
+        // 检测 RMS 突变 - 只有非常剧烈的变化才触发（>12dB = 4倍）
+        // 并且需要连续稳定至少 10 帧后才检测，避免正常音乐动态被误判
+        if prevFrameRMS > 0.01 && currentRMS > 0.01 && stableFrameCount > 10 {
             let rmsRatio = currentRMS / prevFrameRMS
-            if rmsRatio > 2.0 || rmsRatio < 0.5 {
+            // 只有 RMS 变化超过 4 倍（12dB）才认为是滤镜重建
+            if rmsRatio > 4.0 || rmsRatio < 0.25 {
                 if !previousTail.isEmpty && previousTail.count >= channelCount {
                     var maxJump: Float = 0
                     let tailFrames = previousTail.count / channelCount
@@ -597,7 +602,8 @@ public final class AudioRepairEngine {
                             maxJump = max(maxJump, abs(data[ch] - previousTail[lastTailIdx]))
                         }
                     }
-                    if maxJump > 0.1 {
+                    // 波形跳变阈值也提高到 0.3
+                    if maxJump > 0.3 {
                         let jumpFactor = min(maxJump / 0.5, 1.0)
                         let fadeSamples = Int(Float(filterTransitionMaxSamples) * (0.3 + 0.7 * jumpFactor))
                         let actualFade = min(fadeSamples, frameCount)
@@ -737,7 +743,9 @@ public final class AudioRepairEngine {
         }
         histEnergy = sqrtf(histEnergy / Float(max(histCheckFrames * channelCount, 1)))
 
-        if histEnergy > 0.01 && currentEnergy < histEnergy * 0.3 {
+        // 只有当能量突然下降到 5% 以下才认为是混响断裂
+        // 0.3 (30%) 太敏感，正常音乐动态会误触发
+        if histEnergy > 0.05 && currentEnergy < histEnergy * 0.05 {
             reverbTailActive = true
             reverbTailRemaining = min(2048, historyFrames)
         }
@@ -788,7 +796,8 @@ public final class AudioRepairEngine {
             for ch in 0..<channelCount {
                 let prev = previousPhaseDirection[ch]
                 let curr = currentDirection[ch]
-                if abs(prev) > 0.001 && abs(curr) > 0.001 {
+                // 提高斜率阈值到 0.1，避免低能量信号的噪声干扰
+                if abs(prev) > 0.1 && abs(curr) > 0.1 {
                     totalChecked += 1
                     if prev * curr < 0 { flippedChannels += 1 }
                 }
