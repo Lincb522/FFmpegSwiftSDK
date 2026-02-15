@@ -1104,8 +1104,11 @@ final class AudioFilterGraph {
 
         processedSamples += Int64(buffer.frameCount)
 
+        // 检测格式是否变化（采样率或声道数）
+        let formatChanged = sampleRate != buffer.sampleRate || channelCount != buffer.channelCount
+        
         // 格式变化或参数变化时重建滤镜图
-        let needsGraphRebuild = needsRebuild || sampleRate != buffer.sampleRate || channelCount != buffer.channelCount
+        let needsGraphRebuild = needsRebuild || formatChanged
         
         if needsGraphRebuild {
             // 保存旧图的最后输出用于交叉淡化
@@ -1114,8 +1117,16 @@ final class AudioFilterGraph {
                 crossfadeSamplesRemaining = crossfadeDuration
             }
             
-            // Flush 旧滤镜图中的剩余帧（避免丢失数据）
-            flushFilterGraphUnsafe()
+            // 关键修复：当格式变化时，必须先完全销毁旧滤镜图
+            // 不能调用 flushFilterGraphUnsafe()，因为旧滤镜图期望的格式与新帧不同
+            // FFmpeg 会报错 "Changing audio frame properties on the fly is not supported"
+            if formatChanged {
+                // 格式变化时直接销毁，不 flush（避免格式不匹配错误）
+                destroyGraphUnsafe()
+            } else {
+                // 仅参数变化时，可以安全 flush 旧滤镜图中的剩余帧
+                flushFilterGraphUnsafe()
+            }
             
             sampleRate = buffer.sampleRate
             channelCount = buffer.channelCount
@@ -1307,7 +1318,9 @@ final class AudioFilterGraph {
 
         // abuffer（输入源）
         guard let abuffer = avfilter_get_by_name("abuffer") else { return }
-        let srcArgs = "sample_rate=\(sampleRate):sample_fmt=flt:channel_layout=\(channelCount == 1 ? "mono" : "stereo")"
+        // 根据声道数获取对应的声道布局字符串
+        let channelLayoutStr = getChannelLayoutString(for: channelCount)
+        let srcArgs = "sample_rate=\(sampleRate):sample_fmt=flt:channel_layout=\(channelLayoutStr)"
         var srcCtx: UnsafeMutablePointer<AVFilterContext>?
         guard avfilter_graph_create_filter(&srcCtx, abuffer, "src", srcArgs, nil, graph) >= 0,
               let src = srcCtx else {
@@ -1511,21 +1524,57 @@ final class AudioFilterGraph {
             }
         }
 
-        // 声道交换
-        if channelSwapEnabled && channelCount == 2 {
-            if let ctx = createFilter(graph: graph, name: "pan", label: "swap",
-                                       args: "stereo|c0=c1|c1=c0") {
+        // 声道交换（交换前左和前右声道）
+        if channelSwapEnabled && channelCount >= 2 {
+            // 根据声道数生成交换公式
+            let swapArgs: String
+            switch channelCount {
+            case 2:
+                swapArgs = "stereo|c0=c1|c1=c0"
+            case 6:
+                // 5.1: 交换 FL 和 FR，其他保持
+                swapArgs = "5.1|c0=c1|c1=c0|c2=c2|c3=c3|c4=c4|c5=c5"
+            case 8:
+                // 7.1: 交换 FL 和 FR，其他保持
+                swapArgs = "7.1|c0=c1|c1=c0|c2=c2|c3=c3|c4=c4|c5=c5|c6=c6|c7=c7"
+            default:
+                // 通用：只交换前两个声道
+                var channels = ["c1", "c0"]
+                for i in 2..<channelCount {
+                    channels.append("c\(i)")
+                }
+                swapArgs = "\(channelCount)c|\(channels.enumerated().map { "c\($0.offset)=\($0.element)" }.joined(separator: "|"))"
+            }
+            if let ctx = createFilter(graph: graph, name: "pan", label: "swap", args: swapArgs) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
         }
 
-        // 声道平衡
-        if channelBalance != 0.0 && channelCount == 2 {
+        // 声道平衡（调整前左和前右声道的增益）
+        if channelBalance != 0.0 && channelCount >= 2 {
             let leftGain = channelBalance < 0 ? 1.0 : 1.0 - channelBalance
             let rightGain = channelBalance > 0 ? 1.0 : 1.0 + channelBalance
-            if let ctx = createFilter(graph: graph, name: "pan", label: "balance",
-                                       args: "stereo|c0=\(String(format: "%.2f", leftGain))*c0|c1=\(String(format: "%.2f", rightGain))*c1") {
+            // 根据声道数生成平衡公式
+            let balanceArgs: String
+            switch channelCount {
+            case 2:
+                balanceArgs = "stereo|c0=\(String(format: "%.2f", leftGain))*c0|c1=\(String(format: "%.2f", rightGain))*c1"
+            case 6:
+                // 5.1: 调整 FL 和 FR，其他保持
+                balanceArgs = "5.1|c0=\(String(format: "%.2f", leftGain))*c0|c1=\(String(format: "%.2f", rightGain))*c1|c2=c2|c3=c3|c4=\(String(format: "%.2f", leftGain))*c4|c5=\(String(format: "%.2f", rightGain))*c5"
+            case 8:
+                // 7.1: 调整 FL、FR、SL、SR
+                balanceArgs = "7.1|c0=\(String(format: "%.2f", leftGain))*c0|c1=\(String(format: "%.2f", rightGain))*c1|c2=c2|c3=c3|c4=\(String(format: "%.2f", leftGain))*c4|c5=\(String(format: "%.2f", rightGain))*c5|c6=\(String(format: "%.2f", leftGain))*c6|c7=\(String(format: "%.2f", rightGain))*c7"
+            default:
+                // 通用：只调整前两个声道
+                var channels = ["\(String(format: "%.2f", leftGain))*c0", "\(String(format: "%.2f", rightGain))*c1"]
+                for i in 2..<channelCount {
+                    channels.append("c\(i)")
+                }
+                balanceArgs = "\(channelCount)c|\(channels.enumerated().map { "c\($0.offset)=\($0.element)" }.joined(separator: "|"))"
+            }
+            if let ctx = createFilter(graph: graph, name: "pan", label: "balance", args: balanceArgs) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
@@ -1566,10 +1615,27 @@ final class AudioFilterGraph {
             }
         }
 
-        // 单声道
-        if monoEnabled && channelCount == 2 {
-            if let ctx = createFilter(graph: graph, name: "pan", label: "mono",
-                                       args: "mono|c0=0.5*c0+0.5*c1") {
+        // 单声道（支持多声道混音到单声道）
+        if monoEnabled && channelCount > 1 {
+            // 根据声道数生成混音公式
+            let monoMixArgs: String
+            switch channelCount {
+            case 2:
+                monoMixArgs = "mono|c0=0.5*c0+0.5*c1"
+            case 6:
+                // 5.1: FL, FR, FC, LFE, BL, BR
+                // 标准 5.1 下混公式
+                monoMixArgs = "mono|c0=0.2*c0+0.2*c1+0.3*c2+0.1*c3+0.1*c4+0.1*c5"
+            case 8:
+                // 7.1: FL, FR, FC, LFE, BL, BR, SL, SR
+                monoMixArgs = "mono|c0=0.15*c0+0.15*c1+0.25*c2+0.05*c3+0.1*c4+0.1*c5+0.1*c6+0.1*c7"
+            default:
+                // 通用：所有声道等权重混合
+                let weight = 1.0 / Float(channelCount)
+                let channels = (0..<channelCount).map { "\(String(format: "%.3f", weight))*c\($0)" }.joined(separator: "+")
+                monoMixArgs = "mono|c0=\(channels)"
+            }
+            if let ctx = createFilter(graph: graph, name: "pan", label: "mono", args: monoMixArgs) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
@@ -1819,7 +1885,14 @@ final class AudioFilterGraph {
 
         // ==================== 输出格式 ====================
         
-        let aformatArgs = "sample_fmts=flt:sample_rates=\(sampleRate):channel_layouts=\(monoEnabled ? "mono" : (channelCount == 1 ? "mono" : "stereo"))"
+        // 根据声道数获取输出声道布局
+        let outputChannelLayout: String
+        if monoEnabled {
+            outputChannelLayout = "mono"
+        } else {
+            outputChannelLayout = getChannelLayoutString(for: channelCount)
+        }
+        let aformatArgs = "sample_fmts=flt:sample_rates=\(sampleRate):channel_layouts=\(outputChannelLayout)"
         if let ctx = createFilter(graph: graph, name: "aformat", label: "aformat", args: aformatArgs) {
             guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
             lastCtx = ctx
@@ -1844,6 +1917,33 @@ final class AudioFilterGraph {
         var ctx: UnsafeMutablePointer<AVFilterContext>?
         guard avfilter_graph_create_filter(&ctx, filter, label, args, nil, graph) >= 0 else { return nil }
         return ctx
+    }
+    
+    /// 根据声道数获取 FFmpeg 声道布局字符串
+    /// 支持 1-8 声道，包括 5.1 和 7.1 环绕声
+    private func getChannelLayoutString(for channels: Int) -> String {
+        switch channels {
+        case 1:
+            return "mono"
+        case 2:
+            return "stereo"
+        case 3:
+            return "2.1"  // 立体声 + 低音炮
+        case 4:
+            return "quad"  // 四声道（前左、前右、后左、后右）
+        case 5:
+            return "4.1"  // 四声道 + 低音炮
+        case 6:
+            return "5.1"  // 5.1 环绕声（前左、前右、中置、低音炮、后左、后右）
+        case 7:
+            return "6.1"  // 6.1 环绕声
+        case 8:
+            return "7.1"  // 7.1 环绕声
+        default:
+            // 对于其他声道数，使用通用格式
+            // FFmpeg 支持 "Nc" 格式表示 N 个声道
+            return "\(channels)c"
+        }
     }
 
     /// 销毁滤镜图（线程安全）
