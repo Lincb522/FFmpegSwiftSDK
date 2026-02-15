@@ -29,7 +29,7 @@ final class AudioFilterGraph {
     /// 响度标准化（EBU R128）
     private(set) var loudnormEnabled: Bool = false
     private(set) var loudnormTarget: Float = -14.0  // LUFS
-    private(set) var loudnormLRA: Float = 11.0      // LRA
+    private(set) var loudnormLRA: Float = 7.0      // LRA（响度范围），降低到 7 更保守
     private(set) var loudnormTP: Float = -1.0       // True Peak
     
     /// 动态压缩（夜间模式）
@@ -687,7 +687,7 @@ final class AudioFilterGraph {
         // 动态
         loudnormEnabled = false
         loudnormTarget = -14.0
-        loudnormLRA = 11.0
+        loudnormLRA = 7.0
         loudnormTP = -1.0
         compressorEnabled = false
         compressorThreshold = -20.0
@@ -1063,8 +1063,11 @@ final class AudioFilterGraph {
         }
 
         // 响度标准化
+        // 使用 linear=true 模式，避免实时处理时的 pumping 效果
+        // dual_mono=true 对单声道内容更友好
+        // offset=0 不额外调整偏移
         if loudnormEnabled {
-            let args = "I=\(String(format: "%.1f", loudnormTarget)):LRA=\(String(format: "%.1f", loudnormLRA)):TP=\(String(format: "%.1f", loudnormTP))"
+            let args = "I=\(String(format: "%.1f", loudnormTarget)):LRA=\(String(format: "%.1f", loudnormLRA)):TP=\(String(format: "%.1f", loudnormTP)):linear=true:dual_mono=true:print_format=none"
             if let ctx = createFilter(graph: graph, name: "loudnorm", label: "loudnorm", args: args) {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
