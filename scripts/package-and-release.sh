@@ -9,8 +9,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build-ffmpeg"
-RELEASE_TAG="0.4.0"
-SDK_TAG="0.9.5"
+RELEASE_TAG="0.5.0"
+SDK_TAG="1.1.12"
 REPO="Lincb522/FFmpegSwiftSDK"
 
 DEVICE_PREFIX="$BUILD_DIR/output-iphoneos-arm64"
@@ -106,10 +106,10 @@ git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
 # 创建新 release 并上传
 gh release create "$RELEASE_TAG" \
     "$ZIP_PATH" \
-    --title "FFmpeg 8.0 iOS Binary (with swscale)" \
+    --title "FFmpeg 8.0 iOS Binary (with HTTPS/TLS)" \
     --notes "FFmpeg 8.0 预编译静态库 (arm64 device + arm64/x86_64 simulator)
 包含: avformat, avcodec, avutil, swresample, swscale, avfilter
-新增: libswscale (视频缩放)
+新增: SecureTransport TLS 支持 (HTTPS 协议可用)
 硬件加速: VideoToolbox (H.264/HEVC)
 音频滤镜: equalizer, superequalizer, volume, loudnorm, atempo"
 
@@ -133,8 +133,8 @@ echo "=== Step 8: 提交 + 打 SDK tag ($SDK_TAG) + 推送 ==="
 
 cd "$PROJECT_DIR"
 git add -A
-git commit -m "feat: FFmpeg 8.0 with swscale - binary $RELEASE_TAG, SDK $SDK_TAG"
-git tag -a "$SDK_TAG" -m "SDK $SDK_TAG - 新增 swscale 支持"
+git commit -m "feat: FFmpeg 8.0 with SecureTransport HTTPS - binary $RELEASE_TAG, SDK $SDK_TAG"
+git tag -a "$SDK_TAG" -m "SDK $SDK_TAG - 新增 HTTPS/TLS 支持 (SecureTransport)"
 git push origin main --tags
 
 echo ""

@@ -23,6 +23,7 @@ COMMON_FLAGS="--enable-static \
     --disable-doc \
     --disable-debug \
     --disable-autodetect \
+    --enable-securetransport \
     --enable-pic \
     --enable-small \
     --enable-swresample \

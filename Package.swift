@@ -35,6 +35,7 @@ let package = Package(
                 .linkedLibrary("avutil", .when(platforms: [.macOS])),
                 .linkedLibrary("swresample", .when(platforms: [.macOS])),
                 .linkedLibrary("avfilter", .when(platforms: [.macOS])),
+                .linkedFramework("Security", .when(platforms: [.iOS])),
             ]
         ),
 
@@ -42,8 +43,8 @@ let package = Package(
         // 远程引用：从 GitHub Release 下载预编译的 xcframework
         .binaryTarget(
             name: "FFmpegLibs",
-            url: "https://github.com/Lincb522/FFmpegSwiftSDK/releases/download/0.4.0/FFmpegLibs.xcframework.zip",
-            checksum: "e1fc45343a3e28621f57453168d2fa5766585ef2cbc5c396c4f6d258e618220c"
+            url: "https://github.com/Lincb522/FFmpegSwiftSDK/releases/download/0.5.0/FFmpegLibs.xcframework.zip",
+            checksum: "56f285131132dcb0b1debad49964b12bf167003102c1d694c289f87571cd1399"
         ),
 
         .target(
