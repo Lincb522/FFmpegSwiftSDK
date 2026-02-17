@@ -131,6 +131,10 @@ public final class StreamPlayer {
     /// player.audioRepair.isSoftLimiterEnabled = true
     /// ```
     public var audioRepair: AudioRepairEngine { repairEngine }
+    
+    /// 音频数据回调。在音频渲染线程调用，用于实时音频分析、识别等。
+    /// 回调参数：PCM Float32 数据、帧数、声道数、采样率
+    public var onAudioData: ((_ samples: UnsafePointer<Float>, _ frameCount: Int, _ channelCount: Int, _ sampleRate: Int) -> Void)?
 
     /// The video display layer. Add this to your view's layer hierarchy to show video.
     ///
@@ -260,6 +264,11 @@ public final class StreamPlayer {
         self.audioRenderer.setRepairEngine(repairEngine)
         // 设置 equalizer 的 audioEffects 引用，用于应用预设的环绕效果
         self.equalizer.audioEffects = self.audioEffects
+        
+        // 将 StreamPlayer 的音频回调桥接到 AudioRenderer
+        self.audioRenderer.onAudioData = { [weak self] samples, frameCount, channelCount, sampleRate in
+            self?.onAudioData?(samples, frameCount, channelCount, sampleRate)
+        }
     }
 
     deinit {

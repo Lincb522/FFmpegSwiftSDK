@@ -39,6 +39,9 @@ final class AudioRenderer {
 
     /// Optional 音频修复引擎（在所有效果之后、输出之前）
     private var repairEngine: AudioRepairEngine?
+    
+    /// Optional 音频数据回调（用于实时分析、识别等）
+    var onAudioData: ((_ samples: UnsafePointer<Float>, _ frameCount: Int, _ channelCount: Int, _ sampleRate: Int) -> Void)?
 
     /// Sample rate of the current audio stream (needed by EQ).
     private var sampleRate: Int = 44100
@@ -394,6 +397,9 @@ final class AudioRenderer {
         if let analyzer = spectrumAnalyzer, analyzer.isEnabled {
             analyzer.feed(samples: output, frameCount: frameCount, channelCount: channelCount)
         }
+        
+        // 音频数据回调（在所有处理之后，用于实时分析、识别等）
+        onAudioData?(output, frameCount, channelCount, sampleRate)
     }
 }
 
