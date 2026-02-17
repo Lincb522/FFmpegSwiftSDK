@@ -233,6 +233,8 @@ final class Demuxer {
 
                 // Check for EAGAIN (would block, try again for network streams)
                 if ret == -Int32(EAGAIN) {
+                    // 短暂等待后重试，避免 CPU 忙轮询
+                    Thread.sleep(forTimeInterval: 0.001)
                     continue
                 }
 

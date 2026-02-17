@@ -899,6 +899,8 @@ public final class StreamPlayer {
 
         // 释放旧的 pipeline 组件（但不停止 AudioRenderer）
         stateQueue.sync {
+            // 断开旧的连接管理器
+            self.connectionManager?.disconnect()
             self.audioDecoder = nil
             self.videoDecoder = nil
             self.demuxer = demuxer
