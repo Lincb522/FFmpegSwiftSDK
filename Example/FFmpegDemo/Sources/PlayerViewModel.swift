@@ -176,6 +176,17 @@ final class PlayerViewModel: ObservableObject {
 
     private let fingerprintDB = FingerprintDatabase()
 
+    // MARK: - 语音识别歌词
+
+    @Published var isRecognizingLyrics: Bool = false
+    @Published var lyricRecognitionProgress: Float = 0
+    @Published var recognizedLyricResult: RecognizedLyric?
+    @Published var recognizedLyricMessage: String?
+    @Published var isPreparingRecognizer: Bool = false
+    @Published var recognizerReady: Bool = false
+
+    private let lyricRecognizer = LyricRecognizer()
+
     // MARK: - 内部
 
     let player = StreamPlayer()
@@ -500,6 +511,111 @@ final class PlayerViewModel: ObservableObject {
 
     func adjustLyricOffset(_ delta: Double) {
         lyricOffset += delta
+    }
+
+    // MARK: - 语音识别歌词
+
+    /// 准备语音识别引擎（下载并加载模型）
+    func prepareRecognizer() {
+        guard !recognizerReady && !isPreparingRecognizer else { return }
+        
+        isPreparingRecognizer = true
+        recognizedLyricMessage = "正在下载模型（首次需要从网络下载，约 75MB）..."
+        
+        Task {
+            do {
+                // 设置超时时间更长，并添加重试逻辑
+                try await lyricRecognizer.prepare()
+                await MainActor.run {
+                    self.recognizerReady = true
+                    self.isPreparingRecognizer = false
+                    self.recognizedLyricMessage = "识别引擎已就绪"
+                }
+            } catch {
+                await MainActor.run {
+                    self.isPreparingRecognizer = false
+                    let errorMsg = error.localizedDescription
+                    
+                    // 针对网络错误给出更友好的提示
+                    if errorMsg.contains("超时") || errorMsg.contains("timeout") || errorMsg.contains("timed out") {
+                        self.recognizedLyricMessage = "模型下载超时。请检查网络连接后重试。\n提示：首次下载需要从 Hugging Face 获取模型文件（约 75MB），国内网络可能较慢。"
+                    } else if errorMsg.contains("网络") || errorMsg.contains("network") || errorMsg.contains("connection") {
+                        self.recognizedLyricMessage = "网络连接失败。请检查网络后重试。"
+                    } else {
+                        self.recognizedLyricMessage = "模型加载失败: \(errorMsg)"
+                    }
+                }
+            }
+        }
+    }
+
+    /// 识别当前音频的歌词
+    func recognizeLyrics() {
+        guard !urlText.isEmpty else {
+            recognizedLyricMessage = "请先输入音频地址"
+            return
+        }
+
+        // 如果引擎未就绪，先准备
+        if !recognizerReady {
+            prepareRecognizer()
+            recognizedLyricMessage = "正在准备识别引擎，请稍后重试..."
+            return
+        }
+
+        isRecognizingLyrics = true
+        lyricRecognitionProgress = 0
+        recognizedLyricResult = nil
+        recognizedLyricMessage = nil
+
+        let url = urlText
+
+        Task {
+            do {
+                // 配置识别参数
+                var config = LyricRecognizerConfig()
+                config.onProgress = { [weak self] progress in
+                    Task { @MainActor in
+                        self?.lyricRecognitionProgress = progress
+                    }
+                }
+
+                // 执行识别
+                let result = try await lyricRecognizer.recognize(url: url, config: config)
+
+                await MainActor.run {
+                    self.recognizedLyricResult = result
+                    self.isRecognizingLyrics = false
+                    self.recognizedLyricMessage = "识别完成！共 \(result.segments.count) 行，耗时 \(String(format: "%.1f", result.processingTime))秒"
+                }
+            } catch {
+                await MainActor.run {
+                    self.isRecognizingLyrics = false
+                    self.recognizedLyricMessage = "识别失败: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// 应用识别结果到歌词同步器
+    func applyRecognizedLyrics() {
+        guard let result = recognizedLyricResult else { return }
+
+        let lines = result.toLyricLines()
+        player.lyricSyncer.load(lines: lines)
+        hasLyrics = player.lyricSyncer.isLoaded
+        recognizedLyricMessage = "已加载 \(lines.count) 行歌词"
+    }
+
+    /// 导出识别结果为 LRC 格式
+    func exportRecognizedLyrics() -> String? {
+        return recognizedLyricResult?.toEnhancedLRC()
+    }
+
+    /// 清理识别引擎资源
+    func cleanupLyricRecognizer() {
+        lyricRecognizer.cleanup()
+        recognizerReady = false
     }
 
     // MARK: - 音频分析

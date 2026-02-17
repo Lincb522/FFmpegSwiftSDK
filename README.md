@@ -3,7 +3,7 @@
   <h1 align="center">FFmpegSwiftSDK</h1>
   <p align="center">
     基于 FFmpeg 8.0 的 iOS 流媒体播放 Swift SDK<br/>
-    HiFi 无损 · 10 段 EQ · 50+ 音效 · 音频分析 · 歌曲识别 · 歌词同步
+    HiFi 无损 · 10 段 EQ · 50+ 音效 · 音频分析 · 歌曲识别 · 歌词同步 · 语音识别歌词
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/platform-iOS%2016%2B-blue?style=flat-square" />
@@ -29,7 +29,7 @@
 | 处理 | 转码 · 裁剪 · 拼接 · 重采样 · 声道转换 · 提取音频 |
 | 可视化 | 实时 FFT 频谱分析（vDSP 加速）· 波形预览生成 |
 | 元数据 | ID3v1/v2 · Vorbis Comment · iTunes Metadata · 专辑封面提取 |
-| 歌词 | LRC 解析 · 逐字同步 · 双语歌词 · 时间偏移调整 |
+| 歌词 | LRC 解析 · 逐字同步 · 双语歌词 · 时间偏移调整 · 语音识别生成歌词（WhisperKit） |
 | 高级 | A-B 循环 · 无缝切歌（Gapless）· 交叉淡入淡出 · Seek |
 | 同步 | 基于音频时钟的 A/V 同步，自动丢帧 / 重复帧补偿 |
 
@@ -447,6 +447,52 @@ let nearby = player.lyricSyncer.nearbyLines(range: 3)
 
 ---
 
+## 语音识别歌词
+
+基于 WhisperKit 的语音识别引擎，自动将音频转换为带时间戳的歌词：
+
+```swift
+let recognizer = LyricRecognizer()
+
+// 准备模型（首次会自动下载，约 75MB）
+try await recognizer.prepare()
+
+// 识别歌词
+let result = try await recognizer.recognize(url: "https://example.com/song.mp3")
+
+// 查看结果
+print("识别到 \(result.segments.count) 行歌词")
+print("语言: \(result.language ?? "未知")")
+print("耗时: \(result.processingTime)秒")
+
+// 转换为 LyricLine 并加载到播放器
+let lines = result.toLyricLines()
+player.lyricSyncer.load(lines: lines)
+
+// 导出为增强 LRC 格式（带逐字时间戳）
+let lrc = result.toEnhancedLRC()
+try lrc.write(to: outputURL, atomically: true, encoding: .utf8)
+```
+
+配置识别参数：
+
+```swift
+var config = LyricRecognizerConfig()
+config.language = "zh"  // 指定语言（nil = 自动检测）
+config.modelName = "base"  // 模型：tiny, base, small, medium, large-v3
+config.onProgress = { progress in
+    print("进度: \(Int(progress * 100))%")
+}
+
+let result = try await recognizer.recognize(url: url, config: config)
+```
+
+支持的语言：中文、英文、日文、韩文等 90+ 种语言。
+
+详细文档：[语音识别歌词使用指南](docs/LYRIC_RECOGNITION.md)
+
+---
+
 ## A-B 循环
 
 精确区间循环，适用于练歌、学乐器等场景：
@@ -754,6 +800,59 @@ public final class AudioEffects {
 
     func reset()
     var isActive: Bool { get }
+}
+```
+
+</details>
+
+<details>
+<summary>LyricRecognizer</summary>
+
+```swift
+public final class LyricRecognizer {
+    // 准备模型
+    func prepare(modelName: String?) async throws
+    
+    // 识别歌词
+    func recognize(url: String, config: LyricRecognizerConfig) async throws -> RecognizedLyric
+    func recognize(samples: [Float], config: LyricRecognizerConfig) async throws -> RecognizedLyric
+    func recognize(buffer: AudioBuffer, config: LyricRecognizerConfig) async throws -> RecognizedLyric
+    
+    // 清理资源
+    func cleanup()
+    
+    var isReady: Bool { get }
+}
+
+public struct LyricRecognizerConfig {
+    var language: String?        // 语言代码（nil = 自动检测）
+    var modelName: String?       // 模型名称（nil = 自动选择）
+    var wordTimestamps: Bool     // 是否启用逐字时间戳
+    var onProgress: ((Float) -> Void)?  // 进度回调
+}
+
+public struct RecognizedLyric {
+    let segments: [RecognizedSegment]  // 识别片段
+    let language: String?              // 检测到的语言
+    let processingTime: TimeInterval   // 识别耗时
+    
+    func toLyricLines() -> [LyricLine]  // 转换为 LyricLine
+    func toEnhancedLRC() -> String      // 导出为增强 LRC
+}
+
+public struct RecognizedSegment {
+    let text: String              // 片段文本
+    let startTime: TimeInterval   // 开始时间
+    let endTime: TimeInterval     // 结束时间
+    let words: [RecognizedWord]   // 逐字数据
+    let language: String?         // 语言代码
+}
+
+public struct RecognizedWord {
+    let text: String              // 文字内容
+    let startTime: TimeInterval   // 开始时间
+    let endTime: TimeInterval     // 结束时间
+    let confidence: Float         // 识别置信度
 }
 ```
 

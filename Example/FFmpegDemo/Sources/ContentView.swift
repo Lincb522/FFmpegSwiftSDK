@@ -591,25 +591,211 @@ struct ContentView: View {
                         Spacer()
                     }
                 } else {
-                    // 加载示例歌词
-                    VStack(spacing: 8) {
-                        Text("粘贴 LRC 歌词内容")
+                    // 加载歌词选项
+                    VStack(spacing: 12) {
+                        Text("加载歌词")
                             .font(.system(size: 12))
                             .foregroundStyle(.white.opacity(0.4))
-                        Button("加载示例歌词") {
-                            vm.loadLyrics(sampleLRC)
+                        
+                        HStack(spacing: 10) {
+                            // 加载示例歌词
+                            Button {
+                                vm.loadLyrics(sampleLRC)
+                            } label: {
+                                VStack(spacing: 4) {
+                                    Image(systemName: "doc.text")
+                                        .font(.system(size: 18))
+                                    Text("示例歌词")
+                                        .font(.system(size: 11, weight: .medium))
+                                }
+                                .foregroundStyle(accent)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(accent.opacity(0.15))
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            
+                            // 语音识别歌词
+                            Button {
+                                if vm.recognizerReady {
+                                    vm.recognizeLyrics()
+                                } else {
+                                    vm.prepareRecognizer()
+                                }
+                            } label: {
+                                VStack(spacing: 4) {
+                                    if vm.isPreparingRecognizer {
+                                        ProgressView()
+                                            .tint(.green)
+                                            .scaleEffect(0.8)
+                                    } else {
+                                        Image(systemName: vm.recognizerReady ? "waveform.badge.mic" : "arrow.down.circle")
+                                            .font(.system(size: 18))
+                                    }
+                                    Text(vm.recognizerReady ? "语音识别" : "下载模型")
+                                        .font(.system(size: 11, weight: .medium))
+                                }
+                                .foregroundStyle(.green)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(Color.green.opacity(0.15))
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            .disabled(vm.isPreparingRecognizer || (vm.recognizerReady && vm.urlText.isEmpty))
+                            .opacity((vm.isPreparingRecognizer || (vm.recognizerReady && vm.urlText.isEmpty)) ? 0.5 : 1.0)
                         }
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(accent)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(accent.opacity(0.15))
-                        .clipShape(Capsule())
+                        
+                        // 模型状态提示
+                        if vm.isPreparingRecognizer {
+                            HStack(spacing: 6) {
+                                ProgressView()
+                                    .tint(accent)
+                                    .scaleEffect(0.7)
+                                Text("正在下载 Whisper 模型...")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.white.opacity(0.5))
+                            }
+                        } else if vm.recognizerReady {
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.green)
+                                Text("识别引擎已就绪")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.white.opacity(0.5))
+                            }
+                        }
                     }
                     .frame(minHeight: 60)
                 }
+                
+                // 语音识别状态和结果
+                if vm.isRecognizingLyrics {
+                    VStack(spacing: 8) {
+                        HStack(spacing: 8) {
+                            ProgressView().tint(accent)
+                            Text("正在识别歌词...")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.white.opacity(0.6))
+                        }
+                        ProgressView(value: vm.lyricRecognitionProgress)
+                            .tint(accent)
+                            .frame(height: 4)
+                        Text("\(Int(vm.lyricRecognitionProgress * 100))%")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                    .padding(12)
+                    .background(Color.white.opacity(0.05))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                } else if let result = vm.recognizedLyricResult {
+                    VStack(spacing: 10) {
+                        // 识别结果摘要
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("识别完成")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(.green)
+                                HStack(spacing: 12) {
+                                    Label("\(result.segments.count) 行", systemImage: "text.alignleft")
+                                    if let lang = result.language {
+                                        Label(lang.uppercased(), systemImage: "globe")
+                                    }
+                                    Label("\(String(format: "%.1f", result.processingTime))s", systemImage: "clock")
+                                }
+                                .font(.system(size: 10))
+                                .foregroundStyle(.white.opacity(0.6))
+                            }
+                            Spacer()
+                        }
+                        
+                        // 操作按钮
+                        HStack(spacing: 8) {
+                            Button {
+                                vm.applyRecognizedLyrics()
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "checkmark.circle")
+                                    Text("应用歌词")
+                                }
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(accent.opacity(0.3))
+                                .clipShape(Capsule())
+                            }
+                            
+                            Button {
+                                if let lrc = vm.exportRecognizedLyrics() {
+                                    // 复制到剪贴板
+                                    UIPasteboard.general.string = lrc
+                                    vm.recognizedLyricMessage = "已复制到剪贴板"
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "doc.on.doc")
+                                    Text("导出 LRC")
+                                }
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(Color.white.opacity(0.1))
+                                .clipShape(Capsule())
+                            }
+                        }
+                        
+                        // 预览前几行
+                        if !result.segments.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("预览")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.5))
+                                ForEach(result.segments.prefix(3), id: \.startTime) { segment in
+                                    HStack(spacing: 6) {
+                                        Text(formatTime(segment.startTime))
+                                            .font(.system(size: 9, design: .monospaced))
+                                            .foregroundStyle(accent)
+                                        Text(segment.text)
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.white.opacity(0.7))
+                                            .lineLimit(1)
+                                    }
+                                }
+                                if result.segments.count > 3 {
+                                    Text("... 共 \(result.segments.count) 行")
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(.white.opacity(0.4))
+                                }
+                            }
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.white.opacity(0.03))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.green.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                } else if let msg = vm.recognizedLyricMessage {
+                    Text(msg)
+                        .font(.system(size: 11))
+                        .foregroundStyle(msg.contains("失败") ? .red : .white.opacity(0.6))
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.white.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
             }
         }
+    }
+    
+    // 格式化时间为 mm:ss
+    private func formatTime(_ time: TimeInterval) -> String {
+        let minutes = Int(time) / 60
+        let seconds = Int(time) % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 
     // MARK: - A-B Loop Panel
