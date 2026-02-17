@@ -77,12 +77,9 @@ public final class LyricRecognizer {
     public func prepare(modelName: String? = nil) async throws {
         if whisperKit != nil { return }
 
-        let config = WhisperKitConfig(
-            model: modelName,
-            verbose: false,
-            prewarm: true
-        )
-        whisperKit = try await WhisperKit(config)
+        // WhisperKit 会自动下载模型到 ~/Library/Caches/huggingface/
+        // 如果不指定模型，会自动选择设备推荐的模型
+        whisperKit = try await WhisperKit(model: modelName)
     }
 
     // MARK: - 识别方法
