@@ -234,7 +234,8 @@ final class AudioFilterGraph {
 
     /// 是否有任何滤镜处于激活状态
     var isActive: Bool {
-        lock.lock()
+        // 使用 tryLock 避免在实时线程上阻塞
+        guard lock.try() else { return false }
         let active = checkAnyFilterActive()
         lock.unlock()
         return active
@@ -1085,22 +1086,25 @@ final class AudioFilterGraph {
     /// 1. 滤镜图重建时先 flush 旧图中的剩余帧
     /// 2. 使用交叉淡化平滑过渡
     /// 3. 检测并修复音频不连续
+    /// 4. 使用 tryLock 避免实时线程阻塞（获取锁失败时返回原 buffer）
     func process(_ buffer: AudioBuffer) -> AudioBuffer {
-        lock.lock()
+        // 使用 tryLock 避免在实时音频线程上阻塞
+        // 如果锁被其他线程持有（比如参数修改），直接返回原 buffer
+        // 这比阻塞等待更好——跳过一帧滤镜处理不会被听到，但阻塞会导致爆音
+        guard lock.try() else {
+            return buffer
+        }
+        
         let active = checkAnyFilterActive()
-        lock.unlock()
-
+        
         guard active else { 
             // 清空交叉淡化状态
-            lock.lock()
             crossfadeBuffer.removeAll()
             crossfadeSamplesRemaining = 0
             lastOutputSamples.removeAll()
             lock.unlock()
             return buffer 
         }
-
-        lock.lock()
 
         processedSamples += Int64(buffer.frameCount)
 

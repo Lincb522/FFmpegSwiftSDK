@@ -297,6 +297,11 @@ final class AudioRenderer {
     /// samples as requested from the front of the queue, advancing through
     /// buffers as they are consumed. If the queue is empty, fills with silence.
     ///
+    /// 修复电流麦问题：
+    /// 1. 减少实时线程上的内存分配
+    /// 2. 滤镜处理失败时保持原始数据（不输出静音）
+    /// 3. 使用 tryLock 避免实时线程阻塞
+    ///
     /// - Parameters:
     ///   - output: Pointer to the output buffer to fill.
     ///   - frameCount: Number of frames requested by the audio unit.
@@ -336,8 +341,13 @@ final class AudioRenderer {
             output.advanced(by: samplesWritten).update(repeating: 0, count: remaining)
         }
 
+        // 只处理有实际数据的部分
+        guard samplesWritten > 0 else { return }
+
         // Apply FFmpeg avfilter graph (loudnorm, atempo, volume) before EQ
-        if let graph = audioFilterGraph, graph.isActive, samplesWritten > 0 {
+        // 注意：process() 内部会分配内存，但这是 FFmpeg 的要求
+        // 如果滤镜图正在重建，process() 会直接返回原 buffer（零拷贝）
+        if let graph = audioFilterGraph, graph.isActive {
             let buf = AudioBuffer(
                 data: output,
                 frameCount: frameCount,
@@ -347,7 +357,8 @@ final class AudioRenderer {
             let processed = graph.process(buf)
             if processed.data != output {
                 // 滤镜图产生了新的缓冲区，拷贝回 output
-                let copyCount = min(processed.frameCount * processed.channelCount, totalSamples)
+                let outSamples = processed.frameCount * processed.channelCount
+                let copyCount = min(outSamples, totalSamples)
                 output.update(from: processed.data, count: copyCount)
                 // 如果滤镜输出比请求的少（atempo 加速），剩余填静音
                 if copyCount < totalSamples {
@@ -358,7 +369,8 @@ final class AudioRenderer {
         }
 
         // Apply EQ in real-time on the output buffer
-        if let filter = eqFilter, samplesWritten > 0 {
+        // EQFilter 使用 Biquad IIR 就地处理，增益平滑避免突变
+        if let filter = eqFilter {
             let buf = AudioBuffer(
                 data: output,
                 frameCount: frameCount,
@@ -366,20 +378,20 @@ final class AudioRenderer {
                 sampleRate: sampleRate
             )
             let processed = filter.process(buf)
-            // Copy processed data back to output
-            output.update(from: processed.data, count: totalSamples)
-            // Free the processed buffer's allocation
-            processed.data.deallocate()
-            // Do NOT deallocate buf.data — it points to the output buffer we don't own
+            if processed.data != output {
+                // EQFilter 总是分配新 buffer，拷贝回 output
+                output.update(from: processed.data, count: totalSamples)
+                processed.data.deallocate()
+            }
         }
 
         // 音频修复引擎（在所有音效处理之后、输出到硬件之前）
-        if let engine = repairEngine, engine.isActive, samplesWritten > 0 {
+        if let engine = repairEngine, engine.isActive {
             engine.process(output, frameCount: frameCount, channelCount: channelCount, sampleRate: sampleRate)
         }
 
         // 输入频谱分析器（在所有处理之后）
-        if let analyzer = spectrumAnalyzer, analyzer.isEnabled, samplesWritten > 0 {
+        if let analyzer = spectrumAnalyzer, analyzer.isEnabled {
             analyzer.feed(samples: output, frameCount: frameCount, channelCount: channelCount)
         }
     }
