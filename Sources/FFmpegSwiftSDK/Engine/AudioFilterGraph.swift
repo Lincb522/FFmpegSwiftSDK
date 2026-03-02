@@ -230,7 +230,9 @@ final class AudioFilterGraph {
     
     // 上一帧的最后几个采样，用于检测不连续
     private var lastOutputSamples: [Float] = []
-    private let smoothingSamples: Int = 64  // 平滑采样数
+    private let smoothingSamples: Int = 64
+    private var cachedInputFrame: UnsafeMutablePointer<AVFrame>?
+    private var cachedOutputFrame: UnsafeMutablePointer<AVFrame>?
 
     /// 是否有任何滤镜处于激活状态
     var isActive: Bool {
@@ -1143,11 +1145,12 @@ final class AudioFilterGraph {
             return buffer
         }
 
-        // 创建输入 AVFrame
-        guard let frame = av_frame_alloc() else {
+        if cachedInputFrame == nil { cachedInputFrame = av_frame_alloc() }
+        guard let frame = cachedInputFrame else {
             lock.unlock()
             return buffer
         }
+        av_frame_unref(frame)
 
         frame.pointee.format = AV_SAMPLE_FMT_FLT.rawValue
         frame.pointee.sample_rate = Int32(buffer.sampleRate)
@@ -1156,44 +1159,36 @@ final class AudioFilterGraph {
 
         let ret = av_frame_get_buffer(frame, 0)
         guard ret >= 0 else {
-            var fp: UnsafeMutablePointer<AVFrame>? = frame
-            av_frame_free(&fp)
             lock.unlock()
             return buffer
         }
 
-        // 拷贝数据到 frame
         let totalBytes = buffer.frameCount * buffer.channelCount * MemoryLayout<Float>.size
         if let dst = frame.pointee.data.0 {
             memcpy(dst, buffer.data, totalBytes)
         }
 
-        // 送入滤镜图
         let addRet = av_buffersrc_add_frame(srcCtx, frame)
-        var fp: UnsafeMutablePointer<AVFrame>? = frame
-        av_frame_free(&fp)
 
         guard addRet >= 0 else {
             lock.unlock()
             return buffer
         }
 
-        // 从 sink 取出处理后的数据
-        guard let outFrame = av_frame_alloc() else {
+        if cachedOutputFrame == nil { cachedOutputFrame = av_frame_alloc() }
+        guard let outFrame = cachedOutputFrame else {
             lock.unlock()
             return buffer
         }
+        av_frame_unref(outFrame)
 
         let getResult = av_buffersink_get_frame(sinkCtx, outFrame)
 
         guard getResult >= 0 else {
-            var ofp: UnsafeMutablePointer<AVFrame>? = outFrame
-            av_frame_free(&ofp)
             lock.unlock()
             return buffer
         }
 
-        // 转换输出 frame 为 AudioBuffer
         let outFrameCount = Int(outFrame.pointee.nb_samples)
         let outChannels = Int(outFrame.pointee.ch_layout.nb_channels)
         let outSamples = outFrameCount * outChannels
@@ -1204,8 +1199,6 @@ final class AudioFilterGraph {
         }
 
         let outRate = Int(outFrame.pointee.sample_rate)
-        var ofp2: UnsafeMutablePointer<AVFrame>? = outFrame
-        av_frame_free(&ofp2)
 
         // 应用交叉淡化平滑过渡（修复滤镜图重建时的电流声）
         if crossfadeSamplesRemaining > 0 && !crossfadeBuffer.isEmpty {
@@ -1827,12 +1820,40 @@ final class AudioFilterGraph {
         let effectiveTempo: Float
         if pitchSemitones != 0.0 {
             let pitchRatio = powf(2.0, pitchSemitones / 12.0)
+
+            // 升调时先做防混叠低通，减少高频伪影与“沙沙声”
+            if pitchSemitones > 4.0 {
+                let nyquist = Float(sampleRate) * 0.5
+                let cutoff = max(4500.0, min(nyquist * 0.95 / pitchRatio, nyquist * 0.95))
+                if let ctx = createFilter(
+                    graph: graph,
+                    name: "lowpass",
+                    label: "pitch_pre_lp",
+                    args: "frequency=\(Int(cutoff)):poles=2"
+                ) {
+                    guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                    lastCtx = ctx
+                }
+            }
+
             let newRate = Int(Float(sampleRate) * pitchRatio)
             if let ctx = createFilter(graph: graph, name: "asetrate", label: "pitch",
                                        args: "r=\(newRate)") {
                 guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
                 lastCtx = ctx
             }
+
+            // 显式重采样回原采样率，减少 asetrate 后续链路中的伪影
+            if let ctx = createFilter(
+                graph: graph,
+                name: "aresample",
+                label: "pitch_resample",
+                args: "sample_rate=\(sampleRate)"
+            ) {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
+            }
+
             effectiveTempo = tempo / pitchRatio
         } else {
             effectiveTempo = tempo
@@ -1859,6 +1880,20 @@ final class AudioFilterGraph {
                     lastCtx = ctx
                     atempoIndex += 1
                 }
+            }
+        }
+
+        // 降调较大时去除次声低频，减轻“隆隆声/脏低频”
+        if pitchSemitones < -4.0 {
+            let hpFreq = Int(max(35.0, min(120.0, (-pitchSemitones - 4.0) * 20.0 + 35.0)))
+            if let ctx = createFilter(
+                graph: graph,
+                name: "highpass",
+                label: "pitch_post_hp",
+                args: "frequency=\(hpFreq):poles=2"
+            ) {
+                guard avfilter_link(lastCtx, 0, ctx, 0) >= 0 else { destroyGraphUnsafe(); return }
+                lastCtx = ctx
             }
         }
 

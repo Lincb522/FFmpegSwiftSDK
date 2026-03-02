@@ -313,7 +313,10 @@ final class AudioRenderer {
         let totalSamples = frameCount * channelCount
         var samplesWritten = 0
 
-        lock.lock()
+        guard lock.try() else {
+            output.update(repeating: 0, count: totalSamples)
+            return
+        }
 
         while samplesWritten < totalSamples && !bufferQueue.isEmpty {
             let front = bufferQueue[0]
@@ -321,14 +324,12 @@ final class AudioRenderer {
             let availableSamples = frontTotalSamples - currentBufferOffset
             let samplesToRead = min(totalSamples - samplesWritten, availableSamples)
 
-            // Copy samples from the front buffer
             output.advanced(by: samplesWritten)
                 .update(from: front.data.advanced(by: currentBufferOffset), count: samplesToRead)
 
             samplesWritten += samplesToRead
             currentBufferOffset += samplesToRead
 
-            // If we've consumed the entire front buffer, free its memory and remove it
             if currentBufferOffset >= frontTotalSamples {
                 let consumed = bufferQueue.removeFirst()
                 consumed.data.deallocate()
@@ -338,7 +339,6 @@ final class AudioRenderer {
 
         lock.unlock()
 
-        // Fill remaining with silence if the queue ran dry
         if samplesWritten < totalSamples {
             let remaining = totalSamples - samplesWritten
             output.advanced(by: samplesWritten).update(repeating: 0, count: remaining)
@@ -371,8 +371,6 @@ final class AudioRenderer {
             }
         }
 
-        // Apply EQ in real-time on the output buffer
-        // EQFilter 使用 Biquad IIR 就地处理，增益平滑避免突变
         if let filter = eqFilter {
             let buf = AudioBuffer(
                 data: output,
@@ -380,12 +378,7 @@ final class AudioRenderer {
                 channelCount: channelCount,
                 sampleRate: sampleRate
             )
-            let processed = filter.process(buf)
-            if processed.data != output {
-                // EQFilter 总是分配新 buffer，拷贝回 output
-                output.update(from: processed.data, count: totalSamples)
-                processed.data.deallocate()
-            }
+            _ = filter.process(buf)
         }
 
         // 音频修复引擎（在所有音效处理之后、输出到硬件之前）

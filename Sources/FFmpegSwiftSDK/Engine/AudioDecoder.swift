@@ -340,20 +340,7 @@ final class AudioDecoder: Decoder {
             )
         }
 
-        // 如果实际转换的采样数远小于分配的缓冲区，缩减到实际大小以节省内存
         let actualSamples = Int(convertedSamples) * channelCount
-        if actualSamples < totalSamples {
-            let trimmedBuffer = UnsafeMutablePointer<Float>.allocate(capacity: actualSamples)
-            trimmedBuffer.initialize(from: outputBuffer, count: actualSamples)
-            outputBuffer.deallocate()
-            return AudioBuffer(
-                data: trimmedBuffer,
-                frameCount: Int(convertedSamples),
-                channelCount: channelCount,
-                sampleRate: outputSampleRate
-            )
-        }
-
         return AudioBuffer(
             data: outputBuffer,
             frameCount: Int(convertedSamples),
@@ -362,15 +349,62 @@ final class AudioDecoder: Decoder {
         )
     }
 
-    // MARK: - Flush
+    // MARK: - Flush & Drain
 
-    /// Flushes the decoder's internal buffers.
-    ///
-    /// Sends a flush signal to the codec context, discarding any buffered
-    /// frames. Call this when seeking or at end-of-stream.
+    /// Flushes the decoder's internal buffers (discards buffered frames).
+    /// Used when seeking.
     func flush() {
         guard let ctx = codecContext.rawPointer else { return }
         avcodec_flush_buffers(ctx)
+    }
+
+    /// Drains the decoder at EOF: sends NULL packet then receives all remaining buffered frames.
+    /// Returns the final decoded audio buffers that were stuck in the decoder's pipeline.
+    func drain() -> [AudioBuffer] {
+        guard let ctx = codecContext.rawPointer else { return [] }
+        guard let swrCtx = resampleContext else { return [] }
+
+        // Signal EOF to decoder
+        avcodec_send_packet(ctx, nil)
+
+        guard let frame = av_frame_alloc() else { return [] }
+        defer {
+            var framePtr: UnsafeMutablePointer<AVFrame>? = frame
+            av_frame_free(&framePtr)
+        }
+
+        var buffers: [AudioBuffer] = []
+        while true {
+            let ret = avcodec_receive_frame(ctx, frame)
+            if ret < 0 { break }
+            if let buffer = try? convertFrameToBuffer(frame: frame, swrCtx: swrCtx) {
+                buffers.append(buffer)
+            }
+        }
+
+        // Also flush any samples buffered inside SwrContext
+        var outPtr: UnsafeMutablePointer<UInt8>?
+        let maxFlush = 8192
+        let flushBuf = UnsafeMutablePointer<Float>.allocate(capacity: maxFlush * outputChannelCount)
+        outPtr = UnsafeMutableRawPointer(flushBuf)
+            .bindMemory(to: UInt8.self, capacity: maxFlush * outputChannelCount * MemoryLayout<Float>.size)
+        let flushed = swr_convert(swrCtx, &outPtr, Int32(maxFlush), nil, 0)
+        if flushed > 0 {
+            let count = Int(flushed) * outputChannelCount
+            let trimmed = UnsafeMutablePointer<Float>.allocate(capacity: count)
+            trimmed.initialize(from: flushBuf, count: count)
+            flushBuf.deallocate()
+            buffers.append(AudioBuffer(
+                data: trimmed,
+                frameCount: Int(flushed),
+                channelCount: outputChannelCount,
+                sampleRate: outputSampleRate
+            ))
+        } else {
+            flushBuf.deallocate()
+        }
+
+        return buffers
     }
 
     // MARK: - Deinitialization

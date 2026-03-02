@@ -191,7 +191,7 @@ public final class AudioRepairEngine {
 
         let totalSamples = frameCount * channelCount
 
-        lock.lock()
+        guard lock.try() else { return }
 
         ensureStateSize(channelCount: channelCount)
         self.frameCount += Int64(frameCount)

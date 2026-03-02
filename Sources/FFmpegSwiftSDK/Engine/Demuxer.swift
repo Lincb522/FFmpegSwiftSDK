@@ -213,8 +213,8 @@ final class Demuxer {
             throw FFmpegError.resourceAllocationFailed(resource: "AVFormatContext (nil)")
         }
 
+        var eagainCount = 0
         while true {
-            // Allocate a new packet for each read attempt
             guard let packet = av_packet_alloc() else {
                 throw FFmpegError.resourceAllocationFailed(resource: "AVPacket")
             }
@@ -231,10 +231,10 @@ final class Demuxer {
                     return nil
                 }
 
-                // Check for EAGAIN (would block, try again for network streams)
                 if ret == -Int32(EAGAIN) {
-                    // 短暂等待后重试，避免 CPU 忙轮询
-                    Thread.sleep(forTimeInterval: 0.001)
+                    eagainCount += 1
+                    let backoff = min(Double(eagainCount) * 0.002, 0.02)
+                    Thread.sleep(forTimeInterval: backoff)
                     continue
                 }
 
@@ -247,6 +247,7 @@ final class Demuxer {
                 throw FFmpegError.from(code: ret)
             }
 
+            eagainCount = 0
             let streamIndex = packet.pointee.stream_index
 
             if streamIndex == audioStreamIndex {

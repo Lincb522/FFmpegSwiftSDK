@@ -90,6 +90,9 @@ public final class StreamPlayer {
     /// 解码线程更新的已解码时间（入队时间点，非实际播放时间点）
     private var decodedTime: TimeInterval = 0
 
+    /// 无缝切歌时，上一首歌曲的实际解码时长（EOF 时的 decodedTime）
+    public private(set) var previousTrackActualDuration: TimeInterval?
+
     /// Metadata about the currently playing stream, or `nil` if not connected.
     public private(set) var streamInfo: StreamInfo?
 
@@ -237,9 +240,9 @@ public final class StreamPlayer {
     private var nextURL: String?
     /// 预加载是否就绪
     private var isNextReady: Bool = false
-    /// 强制切换标志（音质切换时使用）
     private var forceTransition: Bool = false
-    /// 预加载专用队列
+    /// 暂停信号量，暂停时阻塞解码线程，resume 时唤醒
+    private let pauseSemaphore = DispatchSemaphore(value: 0)
     private let prepareQueue = DispatchQueue(label: "com.ffmpeg-sdk.prepare-next", qos: .utility)
 
     // MARK: - Initialization
@@ -324,6 +327,7 @@ public final class StreamPlayer {
         guard state == .paused else { return }
         audioRenderer.resume()
         transitionState(to: .playing)
+        pauseSemaphore.signal()
     }
 
     /// Stops playback and releases all resources.
@@ -345,6 +349,9 @@ public final class StreamPlayer {
         seekLock.lock()
         pendingSeekTime = time
         seekLock.unlock()
+        if state == .paused {
+            pauseSemaphore.signal()
+        }
     }
 
     // MARK: - A-B 循环
@@ -682,9 +689,8 @@ public final class StreamPlayer {
             // 检查并处理 pending seek（线程安全，在 playbackQueue 上执行）
             processPendingSeek(demuxer: currentDemuxer)
 
-            // Check if paused - wait briefly and retry
             if state == .paused {
-                Thread.sleep(forTimeInterval: 0.01)
+                pauseSemaphore.wait()
                 continue
             }
 
@@ -721,9 +727,11 @@ public final class StreamPlayer {
             }
 
             guard let packet = packet else {
-                // EOF reached — 尝试无缝切换到预加载的下一首
+                // EOF reached — drain decoder to get remaining buffered frames
+                drainDecoderAtEOF()
+
+                // 尝试无缝切换到预加载的下一首
                 if transitionToNextTrack() {
-                    // 成功切换到下一首，继续循环（下次迭代会取到新的 self.demuxer）
                     continue
                 }
                 // 没有预加载的下一首，正常结束
@@ -749,15 +757,33 @@ public final class StreamPlayer {
     }
 
     /// Waits for the audio renderer to finish playing all queued buffers after EOF.
-    /// 添加 10 秒超时保护，防止无限阻塞。
+    /// 超时 = max(15, queuedDuration + 5) 秒，根据实际缓冲量动态计算，防止大帧音频被截断。
     private func waitForRendererDrain() {
-        let maxWait: TimeInterval = 10.0
+        let bufferedSeconds = audioRenderer.queuedDuration
+        let maxWait: TimeInterval = max(15.0, bufferedSeconds + 5.0)
         let start = Date()
         while isActive() && audioRenderer.queuedBufferCount > 0 {
             if Date().timeIntervalSince(start) > maxWait {
                 break
             }
             Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
+    // MARK: - Decoder Drain at EOF
+
+    /// Drains the audio decoder at EOF to flush any remaining buffered frames into the renderer.
+    private func drainDecoderAtEOF() {
+        guard let decoder = stateQueue.sync(execute: { self.audioDecoder }) else { return }
+
+        let remaining = decoder.drain()
+        for buffer in remaining {
+            audioRenderer.enqueue(buffer)
+
+            let pts = stateQueue.sync { self.decodedTime }
+            let endPts = pts + buffer.duration
+            stateQueue.sync { self.decodedTime = endPts }
+            syncController.updateAudioClock(endPts)
         }
     }
 
@@ -922,6 +948,7 @@ public final class StreamPlayer {
             // 如果有 pendingSeekTime（音质切换），保持当前时间不变
             // 否则是正常切歌，重置为 0
             if self.pendingSeekTime == nil {
+                self.previousTrackActualDuration = self.decodedTime
                 self.decodedTime = 0
             }
         }
@@ -929,13 +956,10 @@ public final class StreamPlayer {
         // 重置同步控制器
         syncController.reset()
 
-        // 通知 duration
-        if let duration = info.duration {
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.delegate?.player(self, didUpdateDuration: duration)
-            }
-        }
+        // 注意：这里不再发送 didUpdateDuration，因为在无缝切歌场景下，
+        // didUpdateDuration 会先于 playerDidTransitionToNextTrack 到达主线程，
+        // 导致当前歌曲的进度条总时长被下一首的 duration 覆盖。
+        // duration 已保存在 streamInfo 中，app 层在切歌完成后可从 streamInfo.duration 获取。
 
         // 通知 app 层已切换到下一首
         DispatchQueue.main.async { [weak self] in
@@ -1000,16 +1024,21 @@ public final class StreamPlayer {
                 syncController.updateAudioClock(pts)
 
                 stateQueue.sync {
+                    // decodedTime 记录的是这个 buffer 播放完毕后的时间点（pts + duration），
+                    // 这样 currentTime = decodedTime - queuedDuration 能精确反映实际播放位置，
+                    // 且在歌曲末尾（EOF 后 queuedDuration 逐渐归零）进度条能走到 duration。
+                    let endPts = pts + audioBuffer.duration
+                    
                     // seek 后，如果 PTS 还没到目标位置，不更新 decodedTime（防止进度条回跳）
                     if let target = self.seekTargetTime {
                         if pts >= target {
                             // 已到达或超过 seek 目标，清除标记，恢复正常更新
                             self.seekTargetTime = nil
-                            self.decodedTime = pts
+                            self.decodedTime = endPts
                         }
                         // PTS < target：跳过更新，保持 decodedTime 在 seek 目标位置
                     } else {
-                        self.decodedTime = pts
+                        self.decodedTime = endPts
                     }
                 }
 
@@ -1153,8 +1182,8 @@ public final class StreamPlayer {
         stateQueue.sync {
             isPlaybackActive = false
         }
+        pauseSemaphore.signal()
 
-        // 清除未处理的 seek 请求
         seekLock.lock()
         pendingSeekTime = nil
         seekLock.unlock()
