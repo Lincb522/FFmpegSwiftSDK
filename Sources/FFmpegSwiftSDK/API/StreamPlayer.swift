@@ -294,6 +294,9 @@ public final class StreamPlayer {
         // 清理预加载（手动切歌时预加载的下一首可能已不正确）
         cancelNextPreparation()
 
+        // Allow video renderer to accept frames for the new session.
+        videoRenderer.resetForNewSession()
+
         stateQueue.sync {
             self.isPlaybackActive = true
             self.currentURL = url
@@ -683,7 +686,17 @@ public final class StreamPlayer {
     /// before audio finishes playing.
     private func runPlaybackLoop(demuxer initialDemuxer: Demuxer) {
         while isActive() {
-            // 获取当前 demuxer（可能在无缝切歌后被替换）
+            // 优先处理强制切换（音质切换），确保 pendingSeekTime 作用在新 demuxer 上
+            let shouldForceTransition = stateQueue.sync(execute: {
+                let val = self.forceTransition
+                self.forceTransition = false
+                return val
+            })
+            if shouldForceTransition && transitionToNextTrack() {
+                audioRenderer.flushQueue()
+            }
+
+            // 获取当前 demuxer（可能刚被 transition 替换）
             guard let currentDemuxer = stateQueue.sync(execute: { self.demuxer }) else { return }
 
             // 检查并处理 pending seek（线程安全，在 playbackQueue 上执行）
@@ -691,18 +704,6 @@ public final class StreamPlayer {
 
             if state == .paused {
                 pauseSemaphore.wait()
-                continue
-            }
-
-            // 检查是否有强制切换请求（音质切换）
-            let shouldForceTransition = stateQueue.sync(execute: {
-                let val = self.forceTransition
-                self.forceTransition = false
-                return val
-            })
-            if shouldForceTransition && transitionToNextTrack() {
-                // 强制切换成功，flush 旧 buffer 并继续
-                audioRenderer.flushQueue()
                 continue
             }
 

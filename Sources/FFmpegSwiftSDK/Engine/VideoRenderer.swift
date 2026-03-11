@@ -14,14 +14,21 @@ import AVFoundation
 /// The `sampleBufferDisplayLayer` is created once at init and can be embedded
 /// directly into a UIView/NSView layer hierarchy by the caller.
 ///
-/// Thread safety: Enqueue operations are dispatched to the main thread
-/// to comply with Core Animation's threading requirements.
+/// Thread safety: All layer operations are serialised through `renderQueue`
+/// to prevent concurrent enqueue / flush races that crash in CoreMedia XPC.
 final class VideoRenderer {
 
     // MARK: - Properties
 
     /// The display layer for video rendering. Embed this in your view hierarchy.
     let sampleBufferDisplayLayer: AVSampleBufferDisplayLayer
+
+    /// Serial queue that serialises all layer operations (enqueue + flush).
+    private let renderQueue = DispatchQueue(label: "ffmpeg.VideoRenderer.serial")
+
+    /// Set to `true` when `clear()` is called; render ignores new frames
+    /// until the next session starts.
+    private var isCleared = false
 
     // MARK: - Initialization
 
@@ -33,19 +40,13 @@ final class VideoRenderer {
     // MARK: - Rendering
 
     /// Renders a decoded video frame.
-    ///
-    /// Converts the frame's `CVPixelBuffer` into a `CMSampleBuffer` and enqueues
-    /// it on the display layer.
-    ///
-    /// - Parameter frame: The decoded video frame to render.
     func render(_ frame: VideoFrame) {
         guard let sampleBuffer = createSampleBuffer(from: frame) else { return }
 
         let layer = sampleBufferDisplayLayer
         let buffer = sampleBuffer
-        if Thread.isMainThread {
-            layer.enqueue(buffer)
-        } else {
+        renderQueue.async { [weak self] in
+            guard let self, !self.isCleared else { return }
             DispatchQueue.main.async {
                 layer.enqueue(buffer)
             }
@@ -53,14 +54,21 @@ final class VideoRenderer {
     }
 
     /// Clears the display, flushing any pending frames.
+    /// Safe to call from any thread.
     func clear() {
         let layer = sampleBufferDisplayLayer
-        if Thread.isMainThread {
+        renderQueue.sync { [weak self] in
+            self?.isCleared = true
+        }
+        DispatchQueue.main.async {
             layer.flushAndRemoveImage()
-        } else {
-            DispatchQueue.main.sync {
-                layer.flushAndRemoveImage()
-            }
+        }
+    }
+
+    /// Resets the cleared flag so `render` works again for a new session.
+    func resetForNewSession() {
+        renderQueue.async { [weak self] in
+            self?.isCleared = false
         }
     }
 

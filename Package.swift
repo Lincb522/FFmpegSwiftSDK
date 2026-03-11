@@ -28,6 +28,7 @@ let package = Package(
             publicHeadersPath: "include",
             cSettings: [
                 .headerSearchPath("include"),
+                .unsafeFlags(["-I/opt/homebrew/include", "-I/usr/local/include"], .when(platforms: [.macOS])),
             ],
             linkerSettings: [
                 .linkedLibrary("avformat", .when(platforms: [.macOS])),
@@ -35,6 +36,7 @@ let package = Package(
                 .linkedLibrary("avutil", .when(platforms: [.macOS])),
                 .linkedLibrary("swresample", .when(platforms: [.macOS])),
                 .linkedLibrary("avfilter", .when(platforms: [.macOS])),
+                .unsafeFlags(["-L/opt/homebrew/lib", "-L/usr/local/lib"], .when(platforms: [.macOS])),
                 .linkedFramework("Security", .when(platforms: [.iOS])),
             ]
         ),

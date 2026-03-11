@@ -28,6 +28,9 @@ final class AudioRenderer {
     /// Lock protecting the buffer queue.
     private let lock = NSLock()
 
+    /// Serializes start/stop lifecycle to prevent concurrent AudioUnit disposal.
+    private let lifecycleLock = NSLock()
+
     /// Optional EQ filter applied in real-time during the render callback.
     private var eqFilter: EQFilter?
 
@@ -54,6 +57,25 @@ final class AudioRenderer {
 
     /// Whether the renderer is currently started (audio unit initialized).
     private var isStarted: Bool = false
+
+    /// Set to `true` before tearing down the AudioUnit so the render callback
+    /// outputs silence instead of accessing the buffer queue.
+    /// Access is protected by `stopLock` (os_unfair_lock — safe on real-time threads).
+    private var _isStopping = false
+    private var stopLock = os_unfair_lock_s()
+
+    fileprivate var isStopping: Bool {
+        os_unfair_lock_lock(&stopLock)
+        let val = _isStopping
+        os_unfair_lock_unlock(&stopLock)
+        return val
+    }
+
+    private func setStopping(_ value: Bool) {
+        os_unfair_lock_lock(&stopLock)
+        _isStopping = value
+        os_unfair_lock_unlock(&stopLock)
+    }
 
     /// 硬件实际采样率（start 后可用，可能与请求的不同）
     private(set) var actualSampleRate: Int = 0
@@ -125,6 +147,9 @@ final class AudioRenderer {
     /// - Parameter format: The audio stream format describing the PCM data.
     /// - Throws: `FFmpegError.resourceAllocationFailed` if the audio unit cannot be created or started.
     func start(format: AudioStreamBasicDescription) throws {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+
         guard !isStarted else { return }
 
         // 设置 AVAudioSession 首选采样率，支持 Hi-Res 192kHz 母带
@@ -243,6 +268,7 @@ final class AudioRenderer {
     /// Used during seek to clear stale audio data before new data arrives.
     /// Deallocates all buffer memory to prevent leaks.
     func flushQueue() {
+        setStopping(true)
         lock.lock()
         for buffer in bufferQueue {
             buffer.data.deallocate()
@@ -250,6 +276,7 @@ final class AudioRenderer {
         bufferQueue.removeAll()
         currentBufferOffset = 0
         lock.unlock()
+        setStopping(false)
     }
 
     /// Stops audio playback and releases all resources.
@@ -257,13 +284,31 @@ final class AudioRenderer {
     /// After calling `stop()`, you must call `start(format:)` again to resume playback.
     /// Deallocates all queued buffer memory to prevent leaks.
     func stop() {
-        if let audioUnit = audioUnit {
-            AudioOutputUnitStop(audioUnit)
-            AudioUnitUninitialize(audioUnit)
-            AudioComponentInstanceDispose(audioUnit)
-            self.audioUnit = nil
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+
+        guard isStarted else { return }
+
+        // 1. Tell the render callback to output silence immediately.
+        setStopping(true)
+
+        if let unit = audioUnit {
+            // 2. Request the AudioUnit to stop pulling render callbacks.
+            AudioOutputUnitStop(unit)
+
+            // 3. Acquire the buffer lock to guarantee no render callback is
+            //    mid-flight inside fillBuffer. After AudioOutputUnitStop the
+            //    callback won't fire again, but one may still be in progress.
+            lock.lock()
+            lock.unlock()
+
+            // 4. Now safe to tear down — no callback can be running.
+            AudioUnitUninitialize(unit)
+            AudioComponentInstanceDispose(unit)
+            audioUnit = nil
         }
 
+        // 5. Free all queued buffers.
         lock.lock()
         for buffer in bufferQueue {
             buffer.data.deallocate()
@@ -273,6 +318,7 @@ final class AudioRenderer {
         lock.unlock()
 
         isStarted = false
+        setStopping(false)
     }
 
     // MARK: - Private Helpers
@@ -311,6 +357,13 @@ final class AudioRenderer {
     ///   - channelCount: Number of channels per frame.
     fileprivate func fillBuffer(_ output: UnsafeMutablePointer<Float>, frameCount: Int, channelCount: Int) {
         let totalSamples = frameCount * channelCount
+
+        // Fast bail-out while stop() is tearing down resources.
+        guard !isStopping else {
+            output.update(repeating: 0, count: totalSamples)
+            return
+        }
+
         var samplesWritten = 0
 
         guard lock.try() else {
