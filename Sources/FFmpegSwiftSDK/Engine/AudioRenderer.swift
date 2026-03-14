@@ -1,8 +1,9 @@
 // AudioRenderer.swift
 // FFmpegSwiftSDK
 //
-// Renders decoded audio PCM data to the system audio device using CoreAudio AudioUnit.
-// Uses a thread-safe buffer queue with a render callback that pulls data on demand.
+// Renders decoded audio PCM data to the system audio device using AVAudioEngine.
+// Uses AVAudioSourceNode as the data provider, reading from a thread-safe buffer queue.
+// The FFmpeg decode thread enqueues buffers; AVAudioSourceNode's render block pulls them.
 
 import Foundation
 import AudioToolbox
@@ -10,44 +11,48 @@ import AVFoundation
 
 /// Renders PCM audio data to the system audio output device.
 ///
-/// `AudioRenderer` uses CoreAudio's AudioUnit to output audio. On iOS it uses the
-/// RemoteIO audio unit; on macOS it uses the DefaultOutput unit. Audio data is
-/// enqueued via `enqueue(_:)` and pulled by the render callback as needed.
+/// `AudioRenderer` uses AVAudioEngine with an AVAudioSourceNode to output audio.
+/// Audio data is enqueued via `enqueue(_:)` and pulled by the source node render block.
 ///
 /// Lifecycle: `start(format:)` → `pause()` / `resume()` → `stop()`
 ///
-/// Thread safety: The internal buffer queue is protected by `NSLock`, allowing
-/// concurrent enqueue (from the decode thread) and dequeue (from the render callback).
+/// Thread safety: The internal buffer queue is protected by `os_unfair_lock`, allowing
+/// concurrent enqueue (from the decode thread) and dequeue (from the render block).
 final class AudioRenderer {
+
+    // MARK: - AVAudioEngine
+
+    private var engine: AVAudioEngine?
+    private var sourceNode: AVAudioSourceNode?
 
     // MARK: - Properties
 
-    /// The AudioUnit instance used for output.
-    private var audioUnit: AudioComponentInstance?
-
     /// Lock protecting the buffer queue.
-    private let lock = NSLock()
+    private var bufferLock = os_unfair_lock_s()
 
-    /// Serializes start/stop lifecycle to prevent concurrent AudioUnit disposal.
+    /// Serializes start/stop lifecycle to prevent concurrent engine disposal.
     private let lifecycleLock = NSLock()
 
-    /// Optional EQ filter applied in real-time during the render callback.
+    /// Optional EQ filter applied in real-time during the render block.
     private var eqFilter: EQFilter?
 
-    /// Optional FFmpeg avfilter 音频滤镜图（loudnorm、atempo、volume）
+    /// Optional FFmpeg avfilter audio filter graph (loudnorm, atempo, volume).
     private var audioFilterGraph: AudioFilterGraph?
 
-    /// Optional 频谱分析器
+    /// Optional spectrum analyzer.
     private var spectrumAnalyzer: SpectrumAnalyzer?
 
-    /// Optional 音频修复引擎（在所有效果之后、输出之前）
+    /// Optional audio repair engine (after all effects, before output).
     private var repairEngine: AudioRepairEngine?
-    
-    /// Optional 音频数据回调（用于实时分析、识别等）
+
+    /// Optional audio data callback for real-time analysis.
     var onAudioData: ((_ samples: UnsafePointer<Float>, _ frameCount: Int, _ channelCount: Int, _ sampleRate: Int) -> Void)?
 
-    /// Sample rate of the current audio stream (needed by EQ).
+    /// Sample rate of the current audio stream.
     private var sampleRate: Int = 44100
+
+    /// Number of channels in the current audio stream.
+    private var channelCount: Int = 2
 
     /// FIFO queue of PCM audio buffers waiting to be rendered.
     private var bufferQueue: [AudioBuffer] = []
@@ -55,12 +60,15 @@ final class AudioRenderer {
     /// Tracks the read offset (in samples) into the front buffer of the queue.
     private var currentBufferOffset: Int = 0
 
-    /// Whether the renderer is currently started (audio unit initialized).
+    /// Pre-allocated interleaved scratch buffer for the render block.
+    /// Avoids per-callback malloc/free on the real-time audio thread.
+    private var interleavedScratch: UnsafeMutablePointer<Float>?
+    private var interleavedScratchCapacity: Int = 0
+
+    /// Whether the renderer is currently started.
     private var isStarted: Bool = false
 
-    /// Set to `true` before tearing down the AudioUnit so the render callback
-    /// outputs silence instead of accessing the buffer queue.
-    /// Access is protected by `stopLock` (os_unfair_lock — safe on real-time threads).
+    /// Set to `true` before tearing down so the render block outputs silence.
     private var _isStopping = false
     private var stopLock = os_unfair_lock_s()
 
@@ -77,7 +85,7 @@ final class AudioRenderer {
         os_unfair_lock_unlock(&stopLock)
     }
 
-    /// 硬件实际采样率（start 后可用，可能与请求的不同）
+    /// Hardware actual sample rate (available after start).
     private(set) var actualSampleRate: Int = 0
 
     /// Maximum number of queued buffers before backpressure kicks in.
@@ -85,19 +93,18 @@ final class AudioRenderer {
 
     /// Returns the current number of queued audio buffers.
     var queuedBufferCount: Int {
-        lock.lock()
+        os_unfair_lock_lock(&bufferLock)
         let count = bufferQueue.count
-        lock.unlock()
+        os_unfair_lock_unlock(&bufferLock)
         return count
     }
 
-    /// 返回缓冲队列中所有 buffer 的总时长（秒），考虑当前 buffer 的已消费偏移
+    /// Returns total duration of all queued buffers in seconds.
     var queuedDuration: TimeInterval {
-        lock.lock()
+        os_unfair_lock_lock(&bufferLock)
         var total: TimeInterval = 0
         for (index, buffer) in bufferQueue.enumerated() {
             if index == 0 && currentBufferOffset > 0 {
-                // 第一个 buffer 可能已部分消费
                 let totalSamples = buffer.frameCount * buffer.channelCount
                 let remainRatio = Double(totalSamples - currentBufferOffset) / Double(max(totalSamples, 1))
                 total += buffer.duration * remainRatio
@@ -105,7 +112,7 @@ final class AudioRenderer {
                 total += buffer.duration
             }
         }
-        lock.unlock()
+        os_unfair_lock_unlock(&bufferLock)
         return total
     }
 
@@ -124,7 +131,7 @@ final class AudioRenderer {
         eqFilter = filter
     }
 
-    /// Sets the FFmpeg avfilter 音频滤镜图。
+    /// Sets the FFmpeg avfilter audio filter graph.
     func setAudioFilterGraph(_ graph: AudioFilterGraph?) {
         audioFilterGraph = graph
     }
@@ -141,224 +148,238 @@ final class AudioRenderer {
 
     /// Starts the audio renderer with the given audio format.
     ///
-    /// Configures and starts an AudioUnit for playback. The format describes
-    /// the PCM data that will be enqueued (sample rate, channels, etc.).
+    /// Creates and starts an AVAudioEngine with an AVAudioSourceNode.
+    /// The format describes the PCM data that will be enqueued.
     ///
     /// - Parameter format: The audio stream format describing the PCM data.
-    /// - Throws: `FFmpegError.resourceAllocationFailed` if the audio unit cannot be created or started.
+    /// - Throws: `FFmpegError.resourceAllocationFailed` if the engine cannot be started.
     func start(format: AudioStreamBasicDescription) throws {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
 
         guard !isStarted else { return }
 
-        // 设置 AVAudioSession 首选采样率，支持 Hi-Res 192kHz 母带
         #if os(iOS) || os(tvOS)
         let session = AVAudioSession.sharedInstance()
         try? session.setPreferredSampleRate(format.mSampleRate)
-        // 硬件实际采样率（可能与请求不同，取决于设备能力）
+        try? session.setPreferredIOBufferDuration(0.005)
         let hwRate = session.sampleRate
         #else
         let hwRate = format.mSampleRate
         #endif
 
-        // 用硬件实际采样率构建最终格式
-        var streamFormat = format
-        streamFormat.mSampleRate = hwRate
         sampleRate = Int(hwRate)
-        // 保存实际采样率供外部查询
+        channelCount = Int(format.mChannelsPerFrame)
         actualSampleRate = Int(hwRate)
 
-        var description = AudioComponentDescription(
-            componentType: kAudioUnitType_Output,
-            componentSubType: audioOutputSubType(),
-            componentManufacturer: kAudioUnitManufacturer_Apple,
-            componentFlags: 0,
-            componentFlagsMask: 0
-        )
+        let audioEngine = AVAudioEngine()
 
-        guard let component = AudioComponentFindNext(nil, &description) else {
-            throw FFmpegError.resourceAllocationFailed(resource: "AudioComponent")
+        // AVAudioEngine internal nodes require non-interleaved (deinterleaved) format.
+        guard let avFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: hwRate,
+            channels: AVAudioChannelCount(channelCount),
+            interleaved: false
+        ) else {
+            throw FFmpegError.resourceAllocationFailed(resource: "AVAudioFormat")
         }
 
-        var unit: AudioComponentInstance?
-        var status = AudioComponentInstanceNew(component, &unit)
-        guard status == noErr, let audioUnit = unit else {
-            throw FFmpegError.resourceAllocationFailed(resource: "AudioComponentInstance (status: \(status))")
-        }
-        self.audioUnit = audioUnit
+        // Pre-allocate scratch buffer for deinterleaving.
+        // iOS typical render callback: 512 or 1024 frames × 2 channels = 1024~2048 floats.
+        // Allocate enough for the largest expected callback (4096 frames stereo).
+        let initialCapacity = 4096 * channelCount
+        interleavedScratch = .allocate(capacity: initialCapacity)
+        interleavedScratchCapacity = initialCapacity
 
-        // Set the stream format on the output scope
-        status = AudioUnitSetProperty(
-            audioUnit,
-            kAudioUnitProperty_StreamFormat,
-            kAudioUnitScope_Input,
-            0, // output bus
-            &streamFormat,
-            UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        )
-        guard status == noErr else {
-            cleanupAudioUnit()
-            throw FFmpegError.resourceAllocationFailed(resource: "AudioUnit StreamFormat (status: \(status))")
-        }
+        // AVAudioSourceNode render block — pulls interleaved data from bufferQueue,
+        // then deinterleaves into the non-interleaved AudioBufferList that
+        // AVAudioEngine expects.
+        let refCon = Unmanaged.passUnretained(self).toOpaque()
+        let chCount = channelCount
 
-        // Set the render callback
-        var callbackStruct = AURenderCallbackStruct(
-            inputProc: renderCallback,
-            inputProcRefCon: Unmanaged.passUnretained(self).toOpaque()
-        )
-        status = AudioUnitSetProperty(
-            audioUnit,
-            kAudioUnitProperty_SetRenderCallback,
-            kAudioUnitScope_Input,
-            0,
-            &callbackStruct,
-            UInt32(MemoryLayout<AURenderCallbackStruct>.size)
-        )
-        guard status == noErr else {
-            cleanupAudioUnit()
-            throw FFmpegError.resourceAllocationFailed(resource: "AudioUnit RenderCallback (status: \(status))")
-        }
+        let node = AVAudioSourceNode(format: avFormat) { _, _, frameCount, audioBufferList -> OSStatus in
+            let renderer = Unmanaged<AudioRenderer>.fromOpaque(refCon).takeUnretainedValue()
+            let frames = Int(frameCount)
+            let needed = frames * chCount
 
-        // Initialize and start
-        status = AudioUnitInitialize(audioUnit)
-        guard status == noErr else {
-            cleanupAudioUnit()
-            throw FFmpegError.resourceAllocationFailed(resource: "AudioUnitInitialize (status: \(status))")
-        }
+            // Use pre-allocated scratch; grow only if needed (rare)
+            let interleaved: UnsafeMutablePointer<Float>
+            if needed <= renderer.interleavedScratchCapacity, let scratch = renderer.interleavedScratch {
+                interleaved = scratch
+            } else {
+                renderer.interleavedScratch?.deallocate()
+                renderer.interleavedScratch = .allocate(capacity: needed)
+                renderer.interleavedScratchCapacity = needed
+                interleaved = renderer.interleavedScratch!
+            }
 
-        status = AudioOutputUnitStart(audioUnit)
-        guard status == noErr else {
-            AudioUnitUninitialize(audioUnit)
-            cleanupAudioUnit()
-            throw FFmpegError.resourceAllocationFailed(resource: "AudioOutputUnitStart (status: \(status))")
+            renderer.fillBuffer(interleaved, frameCount: frames, channelCount: chCount)
+
+            // Deinterleave into separate channel buffers
+            let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            if chCount == 1 {
+                if let outData = ablPointer[0].mData?.assumingMemoryBound(to: Float.self) {
+                    outData.update(from: interleaved, count: frames)
+                }
+            } else {
+                for ch in 0..<min(chCount, ablPointer.count) {
+                    guard let outData = ablPointer[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
+                    for f in 0..<frames {
+                        outData[f] = interleaved[f * chCount + ch]
+                    }
+                }
+            }
+
+            return noErr
         }
 
+        audioEngine.attach(node)
+        audioEngine.connect(node, to: audioEngine.mainMixerNode, format: avFormat)
+        audioEngine.connect(audioEngine.mainMixerNode, to: audioEngine.outputNode, format: nil)
+
+        // Install tap on mainMixerNode for spectrum analysis and audio data callbacks.
+        // Runs on a separate (non-real-time) thread managed by AVAudioEngine.
+        let tapBufferSize: AVAudioFrameCount = 2048
+        audioEngine.mainMixerNode.installTap(onBus: 0, bufferSize: tapBufferSize, format: nil) { [weak self] pcmBuffer, _ in
+            guard let self = self else { return }
+
+            guard let floatData = pcmBuffer.floatChannelData else { return }
+            let frames = Int(pcmBuffer.frameLength)
+            let channels = Int(pcmBuffer.format.channelCount)
+
+            if let analyzer = self.spectrumAnalyzer, analyzer.isEnabled {
+                if pcmBuffer.format.isInterleaved {
+                    analyzer.feed(samples: floatData[0], frameCount: frames, channelCount: channels)
+                } else {
+                    // Non-interleaved: feed left channel only (mono mix).
+                    analyzer.feed(samples: floatData[0], frameCount: frames, channelCount: 1)
+                }
+            }
+
+            if let callback = self.onAudioData {
+                if pcmBuffer.format.isInterleaved {
+                    callback(floatData[0], frames, channels, Int(pcmBuffer.format.sampleRate))
+                } else {
+                    callback(floatData[0], frames, 1, Int(pcmBuffer.format.sampleRate))
+                }
+            }
+        }
+
+        audioEngine.prepare()
+
+        do {
+            try audioEngine.start()
+        } catch {
+            throw FFmpegError.resourceAllocationFailed(resource: "AVAudioEngine.start: \(error.localizedDescription)")
+        }
+
+        self.engine = audioEngine
+        self.sourceNode = node
         isStarted = true
     }
 
     /// Enqueues a PCM audio buffer for playback.
-    ///
-    /// - Parameter buffer: The audio buffer containing PCM data to play.
+    private var lastLowWaterLogTime: UInt64 = 0
+
     func enqueue(_ buffer: AudioBuffer) {
-        lock.lock()
+        os_unfair_lock_lock(&bufferLock)
         bufferQueue.append(buffer)
-        lock.unlock()
+        let count = bufferQueue.count
+        os_unfair_lock_unlock(&bufferLock)
+
+        if count <= 3 {
+            let now = mach_absolute_time()
+            if now - lastLowWaterLogTime > 1_000_000_000 {
+                lastLowWaterLogTime = now
+                print("[AudioRenderer] 📉 low buffer: \(count) queued, duration=\(String(format: "%.2f", buffer.duration))s")
+            }
+        }
     }
 
     /// Pauses audio playback.
-    ///
-    /// The audio unit stops pulling data but remains initialized,
-    /// allowing a quick resume.
     func pause() {
-        guard let audioUnit = audioUnit, isStarted else { return }
-        AudioOutputUnitStop(audioUnit)
+        guard let engine = engine, isStarted, engine.isRunning else { return }
+        engine.pause()
     }
 
     /// Resumes audio playback after a pause.
-    ///
-    /// Restarts the audio unit so the render callback begins pulling data again.
     func resume() {
-        guard let audioUnit = audioUnit, isStarted else { return }
-        AudioOutputUnitStart(audioUnit)
+        guard let engine = engine, isStarted, !engine.isRunning else { return }
+        do {
+            try engine.start()
+        } catch {
+            print("[AudioRenderer] resume failed: \(error.localizedDescription)")
+        }
     }
 
-    /// Flushes all queued audio buffers without stopping the audio unit.
+    /// Flushes all queued audio buffers without stopping the engine.
     ///
     /// Used during seek to clear stale audio data before new data arrives.
-    /// Deallocates all buffer memory to prevent leaks.
     func flushQueue() {
         setStopping(true)
-        lock.lock()
+        os_unfair_lock_lock(&bufferLock)
+        let flushedCount = bufferQueue.count
         for buffer in bufferQueue {
             buffer.data.deallocate()
         }
         bufferQueue.removeAll()
         currentBufferOffset = 0
-        lock.unlock()
+        os_unfair_lock_unlock(&bufferLock)
         setStopping(false)
+        print("[AudioRenderer] 🗑️ flushed \(flushedCount) buffers (seek/stop)")
     }
 
     /// Stops audio playback and releases all resources.
     ///
     /// After calling `stop()`, you must call `start(format:)` again to resume playback.
-    /// Deallocates all queued buffer memory to prevent leaks.
     func stop() {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
 
         guard isStarted else { return }
 
-        // 1. Tell the render callback to output silence immediately.
         setStopping(true)
 
-        if let unit = audioUnit {
-            // 2. Request the AudioUnit to stop pulling render callbacks.
-            AudioOutputUnitStop(unit)
+        if let engine = engine {
+            engine.mainMixerNode.removeTap(onBus: 0)
+            engine.stop()
 
-            // 3. Acquire the buffer lock to guarantee no render callback is
-            //    mid-flight inside fillBuffer. After AudioOutputUnitStop the
-            //    callback won't fire again, but one may still be in progress.
-            lock.lock()
-            lock.unlock()
+            if let node = sourceNode {
+                engine.detach(node)
+            }
 
-            // 4. Now safe to tear down — no callback can be running.
-            AudioUnitUninitialize(unit)
-            AudioComponentInstanceDispose(unit)
-            audioUnit = nil
+            self.sourceNode = nil
+            self.engine = nil
         }
 
-        // 5. Free all queued buffers.
-        lock.lock()
+        interleavedScratch?.deallocate()
+        interleavedScratch = nil
+        interleavedScratchCapacity = 0
+
+        os_unfair_lock_lock(&bufferLock)
         for buffer in bufferQueue {
             buffer.data.deallocate()
         }
         bufferQueue.removeAll()
         currentBufferOffset = 0
-        lock.unlock()
+        os_unfair_lock_unlock(&bufferLock)
 
         isStarted = false
         setStopping(false)
     }
 
-    // MARK: - Private Helpers
+    // MARK: - Render Block Data Provider
 
-    /// Returns the appropriate AudioUnit subtype for the current platform.
-    private func audioOutputSubType() -> OSType {
-        #if os(iOS) || os(tvOS)
-        return kAudioUnitSubType_RemoteIO
-        #else
-        return kAudioUnitSubType_DefaultOutput
-        #endif
-    }
-
-    /// Disposes the audio component instance without uninitializing.
-    private func cleanupAudioUnit() {
-        if let unit = audioUnit {
-            AudioComponentInstanceDispose(unit)
-            audioUnit = nil
-        }
-    }
+    /// Underrun tracking for debug logging.
+    private var underrunCount: Int = 0
+    private var lastUnderrunLogTime: UInt64 = 0
 
     /// Fills the output buffer by pulling samples from the buffer queue.
     ///
-    /// Called from the render callback on the audio thread. Copies as many
-    /// samples as requested from the front of the queue, advancing through
-    /// buffers as they are consumed. If the queue is empty, fills with silence.
-    ///
-    /// 修复电流麦问题：
-    /// 1. 减少实时线程上的内存分配
-    /// 2. 滤镜处理失败时保持原始数据（不输出静音）
-    /// 3. 使用 tryLock 避免实时线程阻塞
-    ///
-    /// - Parameters:
-    ///   - output: Pointer to the output buffer to fill.
-    ///   - frameCount: Number of frames requested by the audio unit.
-    ///   - channelCount: Number of channels per frame.
+    /// Called from the AVAudioSourceNode render block on the audio thread.
     fileprivate func fillBuffer(_ output: UnsafeMutablePointer<Float>, frameCount: Int, channelCount: Int) {
         let totalSamples = frameCount * channelCount
 
-        // Fast bail-out while stop() is tearing down resources.
         guard !isStopping else {
             output.update(repeating: 0, count: totalSamples)
             return
@@ -366,10 +387,7 @@ final class AudioRenderer {
 
         var samplesWritten = 0
 
-        guard lock.try() else {
-            output.update(repeating: 0, count: totalSamples)
-            return
-        }
+        os_unfair_lock_lock(&bufferLock)
 
         while samplesWritten < totalSamples && !bufferQueue.isEmpty {
             let front = bufferQueue[0]
@@ -390,19 +408,25 @@ final class AudioRenderer {
             }
         }
 
-        lock.unlock()
+        os_unfair_lock_unlock(&bufferLock)
 
         if samplesWritten < totalSamples {
             let remaining = totalSamples - samplesWritten
             output.advanced(by: samplesWritten).update(repeating: 0, count: remaining)
+
+            underrunCount += 1
+            let now = mach_absolute_time()
+            if now - lastUnderrunLogTime > 1_000_000_000 {
+                lastUnderrunLogTime = now
+                print("[AudioRenderer] ⚠️ buffer underrun #\(underrunCount): requested=\(frameCount) frames, got=\(samplesWritten / max(channelCount, 1))")
+            }
+        } else {
+            underrunCount = 0
         }
 
-        // 只处理有实际数据的部分
         guard samplesWritten > 0 else { return }
 
-        // Apply FFmpeg avfilter graph (loudnorm, atempo, volume) before EQ
-        // 注意：process() 内部会分配内存，但这是 FFmpeg 的要求
-        // 如果滤镜图正在重建，process() 会直接返回原 buffer（零拷贝）
+        // Apply FFmpeg avfilter graph (loudnorm, atempo, volume)
         if let graph = audioFilterGraph, graph.isActive {
             let buf = AudioBuffer(
                 data: output,
@@ -412,11 +436,9 @@ final class AudioRenderer {
             )
             let processed = graph.process(buf)
             if processed.data != output {
-                // 滤镜图产生了新的缓冲区，拷贝回 output
                 let outSamples = processed.frameCount * processed.channelCount
                 let copyCount = min(outSamples, totalSamples)
                 output.update(from: processed.data, count: copyCount)
-                // 如果滤镜输出比请求的少（atempo 加速），剩余填静音
                 if copyCount < totalSamples {
                     output.advanced(by: copyCount).update(repeating: 0, count: totalSamples - copyCount)
                 }
@@ -424,6 +446,7 @@ final class AudioRenderer {
             }
         }
 
+        // Apply EQ filter
         if let filter = eqFilter {
             let buf = AudioBuffer(
                 data: output,
@@ -434,51 +457,9 @@ final class AudioRenderer {
             _ = filter.process(buf)
         }
 
-        // 音频修复引擎（在所有音效处理之后、输出到硬件之前）
+        // Audio repair engine (after all effects, before output)
         if let engine = repairEngine, engine.isActive {
             engine.process(output, frameCount: frameCount, channelCount: channelCount, sampleRate: sampleRate)
         }
-
-        // 输入频谱分析器（在所有处理之后）
-        if let analyzer = spectrumAnalyzer, analyzer.isEnabled {
-            analyzer.feed(samples: output, frameCount: frameCount, channelCount: channelCount)
-        }
-        
-        // 音频数据回调（在所有处理之后，用于实时分析、识别等）
-        onAudioData?(output, frameCount, channelCount, sampleRate)
     }
-}
-
-// MARK: - Render Callback
-
-/// The AudioUnit render callback that pulls PCM data from the AudioRenderer's buffer queue.
-///
-/// This is a C-function-pointer-compatible callback invoked on the real-time audio thread.
-/// It must not allocate memory, acquire locks that could block, or perform any
-/// operation that could cause priority inversion. The NSLock usage in `fillBuffer`
-/// is acceptable here because the critical section is very short (pointer arithmetic only).
-private func renderCallback(
-    inRefCon: UnsafeMutableRawPointer,
-    ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
-    inTimeStamp: UnsafePointer<AudioTimeStamp>,
-    inBusNumber: UInt32,
-    inNumberFrames: UInt32,
-    ioData: UnsafeMutablePointer<AudioBufferList>?
-) -> OSStatus {
-    guard let ioData = ioData else { return noErr }
-
-    let renderer = Unmanaged<AudioRenderer>.fromOpaque(inRefCon).takeUnretainedValue()
-
-    // Access the first buffer in the AudioBufferList directly
-    let firstBuffer = ioData.pointee.mBuffers
-    guard let outputData = firstBuffer.mData?.assumingMemoryBound(to: Float.self) else {
-        return noErr
-    }
-
-    let channelCount = Int(firstBuffer.mNumberChannels)
-    let frameCount = Int(inNumberFrames)
-
-    renderer.fillBuffer(outputData, frameCount: frameCount, channelCount: channelCount)
-
-    return noErr
 }

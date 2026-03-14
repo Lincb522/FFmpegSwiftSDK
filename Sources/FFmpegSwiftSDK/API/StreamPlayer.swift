@@ -1019,7 +1019,9 @@ public final class StreamPlayer {
                     pts = rawPTS - ptsOffset
                 } else {
                     // PTS 无效，退回 duration 累加（不太精确但可用）
-                    pts = stateQueue.sync { self.currentTime } + audioBuffer.duration
+                    // 直接读 decodedTime 避免嵌套 stateQueue.sync 死锁
+                    let fallbackTime = stateQueue.sync { self.decodedTime }
+                    pts = fallbackTime + audioBuffer.duration
                 }
 
                 syncController.updateAudioClock(pts)
