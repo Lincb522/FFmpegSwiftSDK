@@ -160,7 +160,8 @@ final class AudioDecoder: Decoder {
 
         // Extract audio parameters
         let inputRate = Int(ctx.pointee.sample_rate)
-        outputChannelCount = Int(ctx.pointee.ch_layout.nb_channels)
+        let inputChannelCount = Int(ctx.pointee.ch_layout.nb_channels)
+        outputChannelCount = min(2, inputChannelCount) // Downmix to stereo if > 2
         // 如果指定了目标采样率就用它，否则保持源采样率
         outputSampleRate = targetSampleRate ?? inputRate
 
@@ -193,9 +194,16 @@ final class AudioDecoder: Decoder {
         }
 
         // Configure input channel layout from the codec context
-        var inLayout = ctx.pointee.ch_layout
+        // We use the default layout for the given number of channels to guarantee 
+        // that SwrContext knows how to downmix to Stereo (avoiding silence on UNSPEC or CUSTOM layouts).
+        var inLayout = AVChannelLayout()
+        av_channel_layout_default(&inLayout, ctx.pointee.ch_layout.nb_channels)
+
         var outLayout = AVChannelLayout()
-        av_channel_layout_default(&outLayout, ctx.pointee.ch_layout.nb_channels)
+        
+        // Force output to stereo (or mono if input is mono) to avoid AVAudioEngine issues with > 2 channels
+        let outChannels = min(2, ctx.pointee.ch_layout.nb_channels)
+        av_channel_layout_default(&outLayout, outChannels)
 
         // Use swr_alloc_set_opts2 for modern FFmpeg API
         // Free the previously allocated context since swr_alloc_set_opts2 allocates a new one
@@ -325,6 +333,10 @@ final class AudioDecoder: Decoder {
             inputPtr,
             Int32(frameCount)
         )
+
+        if convertedSamples == 0 {
+            print("[AudioDecoder] ⚠️ swr_convert returned 0 samples! inSamples=\(frameCount), outLayout=\(outputChannelCount)")
+        }
 
         guard convertedSamples > 0 else {
             outputBuffer.deallocate()

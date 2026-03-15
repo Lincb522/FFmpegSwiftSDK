@@ -578,7 +578,9 @@ public final class StreamPlayer {
         var hwSampleRate: Int? = nil
         if info.hasAudio, let sampleRate = info.sampleRate, let channelCount = info.channelCount {
             do {
-                let format = makeAudioFormat(sampleRate: sampleRate, channelCount: channelCount)
+                // Ensure we don't request more than 2 channels from AVAudioEngine (Apple's API struggles with >2 out of the box)
+                let safeChannelCount = min(2, channelCount)
+                let format = makeAudioFormat(sampleRate: sampleRate, channelCount: safeChannelCount)
                 try audioRenderer.start(format: format)
                 hwSampleRate = audioRenderer.actualSampleRate
             } catch {
@@ -1019,9 +1021,7 @@ public final class StreamPlayer {
                     pts = rawPTS - ptsOffset
                 } else {
                     // PTS 无效，退回 duration 累加（不太精确但可用）
-                    // 直接读 decodedTime 避免嵌套 stateQueue.sync 死锁
-                    let fallbackTime = stateQueue.sync { self.decodedTime }
-                    pts = fallbackTime + audioBuffer.duration
+                    pts = stateQueue.sync { self.currentTime } + audioBuffer.duration
                 }
 
                 syncController.updateAudioClock(pts)
