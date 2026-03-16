@@ -373,6 +373,12 @@ final class AudioRenderer {
     /// Underrun tracking for debug logging.
     private var underrunCount: Int = 0
     private var lastUnderrunLogTime: UInt64 = 0
+    
+    /// Whether the previous render callback had an underrun (used for fade-in on recovery).
+    private var wasUnderrun: Bool = false
+    
+    /// Short crossfade ramp length in samples to prevent pops at underrun boundaries.
+    private let fadeRampSamples: Int = 128
 
     /// Fills the output buffer by pulling samples from the buffer queue.
     ///
@@ -411,8 +417,19 @@ final class AudioRenderer {
         os_unfair_lock_unlock(&bufferLock)
 
         if samplesWritten < totalSamples {
+            // Fade out the tail of valid samples to avoid a hard cut to silence
+            if samplesWritten > 0 {
+                let fadeLen = min(fadeRampSamples * channelCount, samplesWritten)
+                let fadeStart = samplesWritten - fadeLen
+                for i in 0..<fadeLen {
+                    let gain = Float(fadeLen - 1 - i) / Float(fadeLen)
+                    output[fadeStart + i] *= gain
+                }
+            }
+            
             let remaining = totalSamples - samplesWritten
             output.advanced(by: samplesWritten).update(repeating: 0, count: remaining)
+            wasUnderrun = true
 
             underrunCount += 1
             let now = mach_absolute_time()
@@ -421,6 +438,15 @@ final class AudioRenderer {
                 print("[AudioRenderer] ⚠️ buffer underrun #\(underrunCount): requested=\(frameCount) frames, got=\(samplesWritten / max(channelCount, 1))")
             }
         } else {
+            // Fade in after recovering from underrun to avoid a pop
+            if wasUnderrun {
+                let fadeLen = min(fadeRampSamples * channelCount, totalSamples)
+                for i in 0..<fadeLen {
+                    let gain = Float(i) / Float(fadeLen)
+                    output[i] *= gain
+                }
+                wasUnderrun = false
+            }
             underrunCount = 0
         }
 
